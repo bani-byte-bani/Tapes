@@ -25,39 +25,41 @@
 
 ## セットアップ手順
 
+**2026年に入り、Cloudflareは新規プロジェクトの標準を「Pages」から「Workers with static assets」に切り替えています。**「Pages」を選んで作業を進めても、ダッシュボードのウィザードがWorkerのデプロイ画面(Deploy commandが`npx wrangler deploy`になっている画面)になることがあります。このプロジェクトは最初からその構成(`wrangler.toml` + `worker/index.js`)で作ってあるので、そのまま進めて問題ありません。
+
 ### 1. GitHubリポジトリを作る
 
 このフォルダ一式(zipを解凍したもの)を、新しいGitHubリポジトリにアップロードしてください。GitHubの「Add file > Upload files」画面はフォルダをドラッグ&ドロップすると構造を保ったままアップロードできます。
 
-`node_modules` と `dist` フォルダはアップロード不要です(Cloudflare Pages側で自動生成されます)。`.gitignore` を同梱していますが、Web UIからアップロードする場合は単純にこの2つのフォルダを含めないようにしてください。
+`node_modules` と `dist` フォルダはアップロード不要です(Cloudflare側で自動生成されます)。`.gitignore` を同梱していますが、Web UIからアップロードする場合は単純にこの2つのフォルダを含めないようにしてください。
 
 ### 2. Cloudflareのアカウント・R2バケットを準備
 
 1. Cloudflareダッシュボードにログイン(アカウントがなければ作成)
-2. 左メニューの **R2 Object Storage** から新しいバケットを作成(例: `band-practice-review`)
+2. 左メニューの **R2 Object Storage** から新しいバケットを作成
+   - バケット名は `wrangler.toml` 内の `bucket_name`(現在 `band-practice-review`)と**必ず一致**させてください。別の名前にした場合は、`wrangler.toml`の該当箇所を書き換えてからアップロードしてください。
 
-### 3. Cloudflare Pagesプロジェクトを作成
+### 3. Workersプロジェクトを作成(Git連携)
 
-1. **Workers & Pages** > **Create application** > **Pages** > **Connect to Git**
+1. **Workers & Pages > Create application > Import a repository**(「Pages」を選んでも同じ画面に着地することがあります)
 2. 先ほど作成したGitHubリポジトリを選択
-3. ビルド設定:
-   - Framework preset: `None` (または `Vite`)
-   - Build command: `npm run build`
-   - Build output directory: `dist`
-4. デプロイを実行(初回は数分かかります)
+3. ビルド設定の画面で、表示されている項目は基本そのままでOKです:
+   - **Build command**: `npm run build`(そのまま)
+   - **Deploy command**: `npx wrangler deploy`(そのまま。`wrangler.toml`を読んで、静的ファイルの配信・R2バインディング・APIの3つをまとめてデプロイしてくれます)
+   - **Non-production branch deploy command**: `npx wrangler versions upload`(そのまま)
+   - **Path**: `/`(そのまま。リポジトリ直下にプロジェクトがあるため)
+   - **API token**: 自動生成のボタンがあればそれを使ってください(CIがデプロイするための権限用トークンです。手動作成の必要は基本ありません)
+4. **Deploy**を実行(初回は数分かかります)
 
-### 4. R2バケットのバインディングを設定
+R2バケットのバインディングは`wrangler.toml`に書いてあるので、ダッシュボードで別途設定する必要はありません(バケットさえ事前に作成してあれば、デプロイ時に自動で紐付きます)。
 
-1. 作成したPagesプロジェクトの **Settings > Bindings > Add > R2 bucket**
-2. Variable name: `BUCKET`
-3. R2 bucket: 手順2で作ったバケットを選択
-4. 保存後、**もう一度デプロイ**し直してください(バインディングは再デプロイしないと反映されません)
+### 4. 動作確認
 
-### 5. 動作確認
-
-発行されたURL(`https://xxxx.pages.dev`)を開き、Android Chromeと Desktop Chromeの両方で以下を確認:
+発行されたURL(`https://xxxx.workers.dev`、または設定したカスタムドメイン)を開き、Android Chromeと Desktop Chromeの両方で以下を確認:
 
 - 録音ファイルのアップロード→自動分割→保存
 - Track再生・コメント追加・★変更
 - 「共有」→発行された閲覧用リンクを別ブラウザ(シークレットウィンドウなど)で開いて内容が見えるか
 - 編集用リンクでコメント追加・お気に入り変更ができるか
+
+もし`/api/share`などが404になる場合は、R2バケット名が`wrangler.toml`の`bucket_name`と一致しているか、デプロイが最新のコミットで完了しているかを確認してください。

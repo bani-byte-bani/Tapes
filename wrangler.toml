@@ -1,0 +1,16 @@
+name = "band-practice-review"
+compatibility_date = "2026-07-13"
+main = "worker/index.js"
+
+# ビルド済みReactアプリ(dist/)を静的配信する。
+# /api/* だけWorkerスクリプトを経由させ、それ以外は静的ファイル(SPAフォールバック込み)を返す。
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+# 共有時のみ使うR2バケット。事前にCloudflareダッシュボードでバケットを作成しておくこと。
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "band-practice-review"
