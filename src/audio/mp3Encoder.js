@@ -1,4 +1,4 @@
-import lamejs from 'lamejs';
+import lamejs from '@breezystack/lamejs';
 
 function floatTo16BitPCM(float32Array) {
   const output = new Int16Array(float32Array.length);
