@@ -137,13 +137,14 @@ export async function listComments(trackId) {
   return comments.sort((a, b) => a.time - b.time);
 }
 
-export async function addComment({ trackId, time, text }) {
+export async function addComment({ trackId, time, text, author }) {
   const db = await getDB();
   const comment = {
     id: nanoid(10),
     trackId,
     time,
     text,
+    author: author || '',
     createdAt: new Date().toISOString(),
   };
   await db.put('comments', comment);
@@ -153,4 +154,17 @@ export async function addComment({ trackId, time, text }) {
 export async function deleteComment(commentId) {
   const db = await getDB();
   await db.delete('comments', commentId);
+}
+
+// このブラウザの表示名(コメントに使う)。ログイン不要のため端末ごとのローカル設定。
+export async function getNickname() {
+  const db = await getDB();
+  const row = await db.get('settings', 'local');
+  return row?.nickname || '';
+}
+
+export async function setNickname(nickname) {
+  const db = await getDB();
+  await db.put('settings', { key: 'local', nickname });
+  return nickname;
 }

@@ -8,6 +8,7 @@ import {
 } from '../repository/remoteRepository.js';
 import StarRating from '../components/StarRating.jsx';
 import CommentTimeline from '../components/CommentTimeline.jsx';
+import NicknameField from '../components/NicknameField.jsx';
 
 export default function ShareViewer() {
   const { shareId } = useParams();
@@ -19,6 +20,7 @@ export default function ShareViewer() {
   const [error, setError] = useState('');
   const [selectedTrackId, setSelectedTrackId] = useState(null);
   const [newComment, setNewComment] = useState('');
+  const [nickname, setNickname] = useState('');
 
   useEffect(() => {
     (async () => {
@@ -52,7 +54,7 @@ export default function ShareViewer() {
   async function handleAddComment(trackId, time) {
     if (!newComment.trim()) return;
     await applyPatch({
-      addComment: { id: nanoid(10), trackId, time, text: newComment.trim() },
+      addComment: { id: nanoid(10), trackId, time, text: newComment.trim(), author: nickname },
     });
     setNewComment('');
   }
@@ -150,23 +152,26 @@ export default function ShareViewer() {
           />
 
           {canEdit && (
-            <div className="link-row" style={{ marginTop: 10 }}>
-              <input
-                className="field"
-                placeholder="コメントを追加(現在の再生位置)"
-                value={newComment}
-                onChange={(e) => setNewComment(e.target.value)}
-              />
-              <button
-                className="btn"
-                onClick={() => {
-                  const el = document.getElementById(`audio-${selectedTrack.id}`);
-                  handleAddComment(selectedTrack.id, el ? el.currentTime : 0);
-                }}
-              >
-                追加
-              </button>
-            </div>
+            <>
+              <NicknameField onChange={setNickname} />
+              <div className="link-row" style={{ marginTop: 10 }}>
+                <input
+                  className="field"
+                  placeholder="コメントを追加(現在の再生位置)"
+                  value={newComment}
+                  onChange={(e) => setNewComment(e.target.value)}
+                />
+                <button
+                  className="btn"
+                  onClick={() => {
+                    const el = document.getElementById(`audio-${selectedTrack.id}`);
+                    handleAddComment(selectedTrack.id, el ? el.currentTime : 0);
+                  }}
+                >
+                  追加
+                </button>
+              </div>
+            </>
           )}
         </div>
       )}

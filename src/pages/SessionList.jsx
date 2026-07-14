@@ -5,6 +5,7 @@ import {
   listSessions,
   listTracks,
 } from '../repository/localRepository.js';
+import TapeDeckButton from '../components/TapeDeckButton.jsx';
 
 function formatDate(dateStr) {
   const [y, m, d] = dateStr.split('-');
@@ -60,9 +61,7 @@ export default function SessionList() {
           </Link>
         ))}
 
-      <Link to="/session/new" className="fab" aria-label="新規録音を追加">
-        +
-      </Link>
+      <TapeDeckButton />
     </div>
   );
 }

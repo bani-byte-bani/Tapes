@@ -43,7 +43,7 @@ export async function createShare({ band, session, tracks, comments, audioBlobs 
         favorite: t.favorite,
         memo: t.memo,
       })),
-      comments: comments.map((c) => ({ id: c.id, trackId: c.trackId, time: c.time, text: c.text })),
+      comments: comments.map((c) => ({ id: c.id, trackId: c.trackId, time: c.time, text: c.text, author: c.author || '' })),
     })
   );
   if (session.shareId && session.shareEditToken) {

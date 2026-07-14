@@ -1,10 +1,11 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   decodeAudioFile,
   computeRMS,
   detectSegments,
   playSegmentsOnly,
+  splitPlaySegments,
   sliceAudioBufferToWavBlob,
   drawWaveform,
   formatTime,
@@ -12,6 +13,8 @@ import {
   DEFAULT_ANALYSIS_OPTIONS,
 } from '../audio/audioAnalysis.js';
 import { getOrCreateDefaultBand, createSession, createTrack, saveTrackAudio } from '../repository/localRepository.js';
+
+const SPEEDS = [1, 1.25, 1.5, 2];
 
 function todayStr() {
   const d = new Date();
@@ -26,21 +29,31 @@ function fmtSliderSec(sec) {
 export default function SessionNew() {
   const navigate = useNavigate();
   const canvasRef = useRef(null);
+  const waveWrapRef = useRef(null);
+  const previewAudioRef = useRef(null);
 
   const [stage, setStage] = useState('idle'); // idle | analyzing | review | saving
   const [isDragActive, setIsDragActive] = useState(false);
   const [progress, setProgress] = useState(0);
   const [audioBuffer, setAudioBuffer] = useState(null);
+  const [previewUrl, setPreviewUrl] = useState(null);
   const [rms, setRms] = useState(null);
-  const [allSegments, setAllSegments] = useState([]); // play + silence
-  const [titles, setTitles] = useState({}); // playIndex -> タイトル
+  const [allSegments, setAllSegments] = useState([]); // play + silence(自動判定のまま)
+  const [manualSplits, setManualSplits] = useState([]); // ユーザーが追加した分割点(秒)
+  const [editMode, setEditMode] = useState('preview'); // 'preview' | 'split'
+  const [titles, setTitles] = useState({}); // finalIndex -> タイトル
   const [settings, setSettings] = useState(DEFAULT_ANALYSIS_OPTIONS);
-  const [dirty, setDirty] = useState(false); // スライダーを動かしたが未反映
+  const [dirty, setDirty] = useState(false);
   const [date, setDate] = useState(todayStr());
   const [memo, setMemo] = useState('');
   const [error, setError] = useState('');
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speed, setSpeed] = useState(1);
+  const [playhead, setPlayhead] = useState(0);
 
   const playSegs = playSegmentsOnly(allSegments);
+  const finalSegs = splitPlaySegments(playSegs, manualSplits);
+  const duration = audioBuffer ? audioBuffer.duration : 0;
 
   function redraw(buffer, segs) {
     requestAnimationFrame(() => {
@@ -66,7 +79,9 @@ export default function SessionNew() {
       setAudioBuffer(buffer);
       setRms(rmsData);
       setTitles({});
+      setManualSplits([]);
       setDirty(false);
+      setPreviewUrl(URL.createObjectURL(file));
       recompute(settings, buffer, rmsData);
       setStage('review');
     } catch (err) {
@@ -75,6 +90,12 @@ export default function SessionNew() {
       setStage('idle');
     }
   }
+
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
 
   function handleDrop(e) {
     e.preventDefault();
@@ -91,7 +112,57 @@ export default function SessionNew() {
   function handleReanalyze() {
     if (!rms || !audioBuffer) return;
     recompute(settings, audioBuffer, rms);
+    setManualSplits([]); // 区間が変わるので手動分割点はリセット
     setDirty(false);
+  }
+
+  function timeFromClientX(clientX) {
+    const canvas = canvasRef.current;
+    if (!canvas || !duration) return 0;
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+    return ratio * duration;
+  }
+
+  function handleCanvasClick(e) {
+    const t = timeFromClientX(e.clientX);
+    if (editMode === 'preview') {
+      seekPreview(t);
+      return;
+    }
+    // 分割モード: 演奏区間内かどうか確認
+    const inPlaySeg = playSegs.some((s) => t > s.start + 0.05 && t < s.end - 0.05);
+    if (!inPlaySeg) return;
+
+    const nearThreshold = Math.max(0.15, duration * 0.006);
+    const nearExisting = manualSplits.find((m) => Math.abs(m - t) < nearThreshold);
+    if (nearExisting !== undefined) {
+      setManualSplits((prev) => prev.filter((m) => m !== nearExisting));
+    } else {
+      setManualSplits((prev) => [...prev, t].sort((a, b) => a - b));
+    }
+  }
+
+  function seekPreview(t) {
+    const el = previewAudioRef.current;
+    if (!el) return;
+    el.currentTime = t;
+    el.play();
+  }
+
+  function togglePlay() {
+    const el = previewAudioRef.current;
+    if (!el) return;
+    if (el.paused) {
+      el.play();
+    } else {
+      el.pause();
+    }
+  }
+
+  function changeSpeed(s) {
+    setSpeed(s);
+    if (previewAudioRef.current) previewAudioRef.current.playbackRate = s;
   }
 
   function updateTitle(index, title) {
@@ -103,8 +174,8 @@ export default function SessionNew() {
     try {
       const band = await getOrCreateDefaultBand();
       const session = await createSession({ bandId: band.id, date, memo });
-      for (let i = 0; i < playSegs.length; i++) {
-        const seg = playSegs[i];
+      for (let i = 0; i < finalSegs.length; i++) {
+        const seg = finalSegs[i];
         const title = titles[i] || `Song ${i + 1}`;
         const track = await createTrack({
           sessionId: session.id,
@@ -172,10 +243,65 @@ export default function SessionNew() {
 
       {(stage === 'review' || stage === 'saving') && (
         <>
-          <canvas ref={canvasRef} className="waveform" style={{ marginTop: 4 }} />
+          <div className="mode-toggle">
+            <button
+              className={`mode-toggle-btn ${editMode === 'preview' ? 'is-active' : ''}`}
+              onClick={() => setEditMode('preview')}
+            >
+              プレビュー
+            </button>
+            <button
+              className={`mode-toggle-btn ${editMode === 'split' ? 'is-active' : ''}`}
+              onClick={() => setEditMode('split')}
+            >
+              分割点を編集
+            </button>
+          </div>
+
+          <div className="waveform-wrap" ref={waveWrapRef}>
+            <canvas ref={canvasRef} className="waveform" onClick={handleCanvasClick} />
+            {duration > 0 && (
+              <div className="playhead-line" style={{ left: `${(playhead / duration) * 100}%` }} />
+            )}
+            {manualSplits.map((t, i) => (
+              <div key={i} className="manual-split-marker" style={{ left: `${(t / duration) * 100}%` }} />
+            ))}
+          </div>
+
           <p style={{ fontSize: 11, color: 'var(--color-ink-soft)', marginTop: 6 }}>
-            グレーの帯 = 無音と判定された区間({silenceCount}箇所)
+            {editMode === 'preview'
+              ? '波形をタップした位置から再生します(再生ヘッドは薄いオレンジの縦線)'
+              : '演奏区間(グレーの帯以外)をタップして分割点を追加/削除できます(オレンジの縦線)'}
+            ・グレーの帯 = 無音と判定された区間({silenceCount}箇所)
           </p>
+
+          {previewUrl && (
+            <div className="preview-bar">
+              <button className="btn btn-secondary" onClick={togglePlay}>
+                {isPlaying ? '一時停止' : '再生'}
+              </button>
+              <div className="speed-group">
+                {SPEEDS.map((s) => (
+                  <button
+                    key={s}
+                    className={`speed-btn ${speed === s ? 'is-active' : ''}`}
+                    onClick={() => changeSpeed(s)}
+                  >
+                    {s}x
+                  </button>
+                ))}
+              </div>
+              <span className="preview-time">{formatTime(playhead)}</span>
+              <audio
+                ref={previewAudioRef}
+                src={previewUrl}
+                style={{ display: 'none' }}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+                onTimeUpdate={(e) => setPlayhead(e.target.currentTime)}
+              />
+            </div>
+          )}
 
           <div className="settings-panel">
             <div className="setting-row">
@@ -232,7 +358,7 @@ export default function SessionNew() {
 
           {dirty && (
             <button className="btn btn-secondary btn-block" style={{ marginTop: 8 }} onClick={handleReanalyze}>
-              この設定で再判定
+              この設定で再判定(手動分割点はリセットされます)
             </button>
           )}
 
@@ -247,14 +373,14 @@ export default function SessionNew() {
             onChange={(e) => setMemo(e.target.value)}
           />
 
-          <div className="section-title">検出された曲 ({playSegs.length})</div>
+          <div className="section-title">検出された曲 ({finalSegs.length})</div>
           <div className="card">
-            {playSegs.length === 0 && (
+            {finalSegs.length === 0 && (
               <p style={{ fontSize: 13, color: 'var(--color-ink-soft)' }}>
                 演奏区間が検出されませんでした。閾値を調整してみてください。
               </p>
             )}
-            {playSegs.map((seg, i) => (
+            {finalSegs.map((seg, i) => (
               <div key={i} className="track-row" style={{ flexWrap: 'wrap' }}>
                 <input
                   className="field"
@@ -273,7 +399,7 @@ export default function SessionNew() {
             className="btn btn-block"
             style={{ marginTop: 20 }}
             onClick={handleSave}
-            disabled={stage === 'saving' || playSegs.length === 0}
+            disabled={stage === 'saving' || finalSegs.length === 0}
           >
             {stage === 'saving' ? '保存中...' : 'このセッションを保存'}
           </button>

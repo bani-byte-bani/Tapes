@@ -12,6 +12,7 @@ export default function CommentTimeline({ comments, onSeek, onDelete, readOnly =
             {formatTime(c.time)}
           </button>
           <div className="comment-text" style={{ flex: 1 }}>
+            {c.author && <span className="comment-author">{c.author}</span>}
             {c.text}
           </div>
           {!readOnly && onDelete && (

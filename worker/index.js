@@ -55,7 +55,14 @@ function applyPatch(record, patch) {
     const c = patch.addComment;
     updated.comments = [
       ...(updated.comments || []),
-      { id: c.id, trackId: c.trackId, time: c.time, text: c.text, createdAt: new Date().toISOString() },
+      {
+        id: c.id,
+        trackId: c.trackId,
+        time: c.time,
+        text: c.text,
+        author: c.author || '',
+        createdAt: new Date().toISOString(),
+      },
     ];
   }
 

@@ -131,6 +131,30 @@ export function playSegmentsOnly(segments) {
   return segments.filter((s) => s.type === 'play');
 }
 
+/**
+ * 演奏区間を、ユーザーが手動で追加した分割点(秒の配列)でさらに分割する。
+ * 各分割点は、それが含まれる演奏区間の中でのみ有効。
+ */
+export function splitPlaySegments(playSegments, manualSplitTimes) {
+  if (!manualSplitTimes || manualSplitTimes.length === 0) return playSegments;
+  const sorted = [...manualSplitTimes].sort((a, b) => a - b);
+  const result = [];
+  for (const seg of playSegments) {
+    const pointsInSeg = sorted.filter((t) => t > seg.start + 0.05 && t < seg.end - 0.05);
+    if (pointsInSeg.length === 0) {
+      result.push(seg);
+      continue;
+    }
+    let prev = seg.start;
+    for (const t of pointsInSeg) {
+      result.push({ type: 'play', start: prev, end: t });
+      prev = t;
+    }
+    result.push({ type: 'play', start: prev, end: seg.end });
+  }
+  return result;
+}
+
 function writeAsciiString(view, offset, str) {
   for (let i = 0; i < str.length; i++) {
     view.setUint8(offset + i, str.charCodeAt(i));

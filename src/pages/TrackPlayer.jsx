@@ -11,6 +11,7 @@ import {
 import { decodeAudioFile, drawWaveform, formatTime } from '../audio/audioAnalysis.js';
 import StarRating from '../components/StarRating.jsx';
 import CommentTimeline from '../components/CommentTimeline.jsx';
+import NicknameField from '../components/NicknameField.jsx';
 
 export default function TrackPlayer() {
   const { sessionId, trackId } = useParams();
@@ -20,6 +21,7 @@ export default function TrackPlayer() {
   const [newComment, setNewComment] = useState('');
   const [titleDraft, setTitleDraft] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
+  const [nickname, setNicknameState] = useState('');
   const audioRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -68,7 +70,7 @@ export default function TrackPlayer() {
 
   async function handleAddComment() {
     if (!newComment.trim()) return;
-    await addComment({ trackId, time: currentTime, text: newComment.trim() });
+    await addComment({ trackId, time: currentTime, text: newComment.trim(), author: nickname });
     setNewComment('');
     await loadComments();
   }
@@ -113,6 +115,7 @@ export default function TrackPlayer() {
       )}
 
       <div className="section-title">コメント</div>
+      <NicknameField onChange={setNicknameState} />
       <CommentTimeline comments={comments} onSeek={seekTo} onDelete={handleDeleteComment} />
 
       <div className="link-row" style={{ marginTop: 10 }}>
