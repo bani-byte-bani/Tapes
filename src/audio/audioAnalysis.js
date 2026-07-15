@@ -226,8 +226,34 @@ export function computePeaks(audioBuffer, numBuckets = 600) {
   return peaks;
 }
 
-/** 波形+無音帯+区間境界線をcanvasに描画する */
-export function drawWaveform(canvas, audioBuffer, segments = [], peaksOverride = null) {
+/** 指定した時間範囲(startSec〜endSec)だけを対象にピークを計算する(ズーム表示・曲単位プレビュー用) */
+export function computePeaksForRange(audioBuffer, startSec, endSec, numBuckets = 500) {
+  const data = audioBuffer.getChannelData(0);
+  const sampleRate = audioBuffer.sampleRate;
+  const startSample = Math.max(0, Math.floor(startSec * sampleRate));
+  const endSample = Math.min(data.length, Math.floor(endSec * sampleRate));
+  const len = Math.max(1, endSample - startSample);
+  const bucketSize = Math.floor(len / numBuckets) || 1;
+  const peaks = new Float32Array(numBuckets);
+  for (let b = 0; b < numBuckets; b++) {
+    const s = startSample + b * bucketSize;
+    const e = Math.min(s + bucketSize, endSample);
+    let max = 0;
+    for (let i = s; i < e; i++) {
+      const v = Math.abs(data[i] || 0);
+      if (v > max) max = v;
+    }
+    peaks[b] = max;
+  }
+  return peaks;
+}
+
+/**
+ * 波形+無音帯+区間境界線をcanvasに描画する。
+ * viewRangeを渡すと、その範囲({start,end}秒)だけを拡大表示する(ズーム表示・曲単位プレビュー用)。
+ * 省略時は全体表示。
+ */
+export function drawWaveform(canvas, audioBuffer, segments = [], viewRange = null) {
   if (!canvas || !audioBuffer) return;
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
@@ -241,19 +267,24 @@ export function drawWaveform(canvas, audioBuffer, segments = [], peaksOverride =
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const duration = audioBuffer.duration;
+  const viewStart = viewRange ? viewRange.start : 0;
+  const viewEnd = viewRange ? viewRange.end : audioBuffer.duration;
+  const viewDur = Math.max(0.001, viewEnd - viewStart);
   const mid = h / 2;
+  const timeToX = (t) => ((t - viewStart) / viewDur) * w;
 
   ctx.fillStyle = '#e2ddd0';
   segments
-    .filter((s) => s.type === 'silence')
+    .filter((s) => s.type === 'silence' && s.end > viewStart && s.start < viewEnd)
     .forEach((s) => {
-      const x1 = (s.start / duration) * w;
-      const x2 = (s.end / duration) * w;
+      const x1 = timeToX(Math.max(s.start, viewStart));
+      const x2 = timeToX(Math.min(s.end, viewEnd));
       ctx.fillRect(x1, 0, Math.max(1, x2 - x1), h);
     });
 
-  const peaks = peaksOverride || computePeaks(audioBuffer, 600);
+  const peaks = viewRange
+    ? computePeaksForRange(audioBuffer, viewStart, viewEnd, 500)
+    : computePeaks(audioBuffer, 600);
   const n = peaks.length;
   ctx.fillStyle = '#211f1b';
   const barW = w / n;
@@ -266,13 +297,15 @@ export function drawWaveform(canvas, audioBuffer, segments = [], peaksOverride =
 
   ctx.strokeStyle = '#b6ae9c';
   ctx.lineWidth = 1;
-  segments.forEach((s) => {
-    const x = (s.start / duration) * w;
-    ctx.beginPath();
-    ctx.moveTo(x + 0.5, 0);
-    ctx.lineTo(x + 0.5, h);
-    ctx.stroke();
-  });
+  segments
+    .filter((s) => s.start >= viewStart && s.start <= viewEnd)
+    .forEach((s) => {
+      const x = timeToX(s.start);
+      ctx.beginPath();
+      ctx.moveTo(x + 0.5, 0);
+      ctx.lineTo(x + 0.5, h);
+      ctx.stroke();
+    });
 }
 
 export function formatTime(seconds) {
