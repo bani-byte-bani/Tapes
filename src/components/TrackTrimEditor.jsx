@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { drawWaveform, formatTime } from '../audio/audioAnalysis.js';
+import { drawWaveform, formatTime, dbToLinear } from '../audio/audioAnalysis.js';
 
 const MIN_DURATION = 1; // トリムしても最低1秒は残す
 
 /**
  * 1曲分の波形をズーム表示し、開始/終了のハンドルをドラッグしてトリムできる。
  * 表示範囲(view)は前後に少し余白を持たせて、元の自動分割の境界も見えるようにしてある。
+ * gainDb(音量調整・dB)を渡すと、波形の見た目にも反映し、クリップする部分を警告色で示す。
  */
 export default function TrackTrimEditor({
   audioBuffer,
@@ -17,6 +18,7 @@ export default function TrackTrimEditor({
   onPreview,
   onSeek,
   currentPlayhead,
+  gainDb = 0,
 }) {
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
@@ -32,10 +34,10 @@ export default function TrackTrimEditor({
 
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      if (canvasRef.current) drawWaveform(canvasRef.current, audioBuffer, [], view);
+      if (canvasRef.current) drawWaveform(canvasRef.current, audioBuffer, [], view, dbToLinear(gainDb));
     });
     return () => cancelAnimationFrame(raf);
-  }, [audioBuffer, view]);
+  }, [audioBuffer, view, gainDb]);
 
   const viewDur = Math.max(0.001, view.end - view.start);
   const pct = (t) => ((Math.min(view.end, Math.max(view.start, t)) - view.start) / viewDur) * 100;

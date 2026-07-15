@@ -556,6 +556,7 @@ export default function SessionNew() {
                     onPreview={(start, end) => handlePreviewRange(start, end, gains[i] ?? 0)}
                     onSeek={(t) => handlePreviewRange(t, seg.end, gains[i] ?? 0)}
                     currentPlayhead={playhead}
+                    gainDb={gains[i] ?? 0}
                   />
                   <div className="gain-row">
                     <span className="gain-label">音量調整</span>
@@ -572,6 +573,9 @@ export default function SessionNew() {
                       {gains[i] ?? 0}dB
                     </span>
                   </div>
+                  {(gains[i] ?? 0) > 0 && (
+                    <p className="clip-hint">波形が赤くなっている箇所は音割れ(クリップ)します</p>
+                  )}
                 </div>
               );
             })}

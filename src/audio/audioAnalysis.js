@@ -256,9 +256,10 @@ export function computePeaksForRange(audioBuffer, startSec, endSec, numBuckets =
 /**
  * 波形+無音帯+区間境界線をcanvasに描画する。
  * viewRangeを渡すと、その範囲({start,end}秒)だけを拡大表示する(ズーム表示・曲単位プレビュー用)。
- * 省略時は全体表示。
+ * gain(リニア倍率、既定1)を渡すと、その音量調整を波形の見た目にも反映し、
+ * クリップする(音が割れる)部分は警告色で描画する。
  */
-export function drawWaveform(canvas, audioBuffer, segments = [], viewRange = null) {
+export function drawWaveform(canvas, audioBuffer, segments = [], viewRange = null, gain = 1) {
   if (!canvas || !audioBuffer) return;
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
@@ -291,12 +292,14 @@ export function drawWaveform(canvas, audioBuffer, segments = [], viewRange = nul
     ? computePeaksForRange(audioBuffer, viewStart, viewEnd, 500)
     : computePeaks(audioBuffer, 600);
   const n = peaks.length;
-  ctx.fillStyle = '#211f1b';
   const barW = w / n;
   for (let i = 0; i < n; i++) {
-    const amp = peaks[i];
+    const raw = peaks[i] * gain;
+    const isClipping = raw > 1;
+    const amp = Math.min(1, raw);
     const barH = Math.max(1, amp * (h * 0.85));
     const x = i * barW;
+    ctx.fillStyle = isClipping ? '#b0503f' : '#211f1b';
     ctx.fillRect(x, mid - barH / 2, Math.max(1, barW * 0.7), barH);
   }
 
