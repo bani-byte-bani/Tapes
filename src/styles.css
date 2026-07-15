@@ -499,6 +499,21 @@ a {
   margin: 4px 0 0;
 }
 
+.comp-toggle {
+  padding: 5px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface);
+  color: var(--color-ink-soft);
+  font-size: 12px;
+}
+
+.comp-toggle.is-active {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
 .gain-row {
   display: flex;
   align-items: center;

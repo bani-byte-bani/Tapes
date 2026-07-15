@@ -7,9 +7,11 @@ import {
   playSegmentsOnly,
   splitPlaySegments,
   sliceAudioBufferToWavBlob,
+  sliceAudioBufferToWavBlobWithCompressor,
   drawWaveform,
   formatTime,
   dbToLinear,
+  COMPRESSOR_PRESET,
   ANALYSIS_INTERVAL_SEC,
   DEFAULT_ANALYSIS_OPTIONS,
 } from '../audio/audioAnalysis.js';
@@ -42,6 +44,7 @@ export default function SessionNew() {
   const boundedEndRef = useRef(null); // 曲単位プレビュー時の終了位置(そこで自動停止)
   const audioCtxRef = useRef(null);
   const gainNodeRef = useRef(null);
+  const compressorNodeRef = useRef(null);
 
   const [stage, setStage] = useState('idle'); // idle | analyzing | review | saving
   const [isDragActive, setIsDragActive] = useState(false);
@@ -53,6 +56,7 @@ export default function SessionNew() {
   const [manualSplits, setManualSplits] = useState([]); // ユーザーが追加した分割点(秒)
   const [trimOverrides, setTrimOverrides] = useState({}); // index -> {start,end} (曲単位の前後トリム)
   const [gains, setGains] = useState({}); // index -> dB (曲単位の音量調整。デフォルト0dB)
+  const [compressorOn, setCompressorOn] = useState({}); // index -> boolean (固定値のコンプレッサーON/OFF)
   const [editMode, setEditMode] = useState('preview'); // 'preview' | 'split'
   const [titles, setTitles] = useState({});
   const [settings, setSettings] = useState(DEFAULT_ANALYSIS_OPTIONS);
@@ -98,11 +102,15 @@ export default function SessionNew() {
       audioCtxRef.current = ctx;
     }
     const source = ctx.createMediaElementSource(previewAudioRef.current);
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.ratio.value = 1; // 既定はバイパス(1:1 = 無変化)。曲ごとのON/OFFで切り替える
     const gainNode = ctx.createGain();
-    source.connect(gainNode).connect(ctx.destination);
+    source.connect(compressor).connect(gainNode).connect(ctx.destination);
     gainNodeRef.current = gainNode;
+    compressorNodeRef.current = compressor;
     return () => {
       source.disconnect();
+      compressor.disconnect();
       gainNode.disconnect();
     };
   }, [previewUrl]);
@@ -127,6 +135,7 @@ export default function SessionNew() {
       setManualSplits([]);
       setTrimOverrides({});
       setGains({});
+      setCompressorOn({});
       setDirty(false);
       setZoomActive(false);
       setPreviewUrl(URL.createObjectURL(file));
@@ -163,6 +172,7 @@ export default function SessionNew() {
     setManualSplits([]); // 区間が変わるので手動分割点・トリムはリセット
     setTrimOverrides({});
     setGains({});
+    setCompressorOn({});
     setDirty(false);
   }
 
@@ -239,12 +249,14 @@ export default function SessionNew() {
     }
     setTrimOverrides({}); // 区間の切れ目が変わるのでトリム・音量はリセット
     setGains({});
+    setCompressorOn({});
   }
 
   function seekPreview(t) {
     const el = previewAudioRef.current;
     if (!el) return;
     if (gainNodeRef.current) gainNodeRef.current.gain.value = 1; // 通常のプレビューは等倍
+    if (compressorNodeRef.current) compressorNodeRef.current.ratio.value = 1; // バイパス
     el.currentTime = t;
     el.play();
   }
@@ -276,13 +288,29 @@ export default function SessionNew() {
     }
   }
 
-  function handlePreviewRange(start, end, gainDb = 0) {
+  function handlePreviewRange(start, end, gainDb = 0, compOn = false) {
     const el = previewAudioRef.current;
     if (!el) return;
     if (gainNodeRef.current) gainNodeRef.current.gain.value = dbToLinear(gainDb);
+    if (compressorNodeRef.current) {
+      const c = compressorNodeRef.current;
+      if (compOn) {
+        c.threshold.value = COMPRESSOR_PRESET.threshold;
+        c.knee.value = COMPRESSOR_PRESET.knee;
+        c.ratio.value = COMPRESSOR_PRESET.ratio;
+        c.attack.value = COMPRESSOR_PRESET.attack;
+        c.release.value = COMPRESSOR_PRESET.release;
+      } else {
+        c.ratio.value = 1; // バイパス
+      }
+    }
     boundedEndRef.current = end;
     el.currentTime = start;
     el.play();
+  }
+
+  function toggleCompressor(index) {
+    setCompressorOn((prev) => ({ ...prev, [index]: !prev[index] }));
   }
 
   function handleGainChange(index, db) {
@@ -318,7 +346,9 @@ export default function SessionNew() {
           startTime: seg.start,
           endTime: seg.end,
         });
-        const wavBlob = sliceAudioBufferToWavBlob(audioBuffer, seg.start, seg.end, dbToLinear(gains[i] ?? 0));
+        const wavBlob = compressorOn[i]
+          ? await sliceAudioBufferToWavBlobWithCompressor(audioBuffer, seg.start, seg.end, dbToLinear(gains[i] ?? 0))
+          : sliceAudioBufferToWavBlob(audioBuffer, seg.start, seg.end, dbToLinear(gains[i] ?? 0));
         await saveTrackAudio(track.id, wavBlob);
       }
       navigate(`/session/${session.id}`);
@@ -553,8 +583,8 @@ export default function SessionNew() {
                     lowerBound={bounds.lower}
                     upperBound={bounds.upper}
                     onChange={(range) => handleTrimChange(i, range)}
-                    onPreview={(start, end) => handlePreviewRange(start, end, gains[i] ?? 0)}
-                    onSeek={(t) => handlePreviewRange(t, seg.end, gains[i] ?? 0)}
+                    onPreview={(start, end) => handlePreviewRange(start, end, gains[i] ?? 0, !!compressorOn[i])}
+                    onSeek={(t) => handlePreviewRange(t, seg.end, gains[i] ?? 0, !!compressorOn[i])}
                     currentPlayhead={playhead}
                     gainDb={gains[i] ?? 0}
                   />
@@ -572,6 +602,16 @@ export default function SessionNew() {
                       {(gains[i] ?? 0) > 0 ? '+' : ''}
                       {gains[i] ?? 0}dB
                     </span>
+                  </div>
+                  <div className="gain-row">
+                    <span className="gain-label">コンプ</span>
+                    <button
+                      type="button"
+                      className={`comp-toggle ${compressorOn[i] ? 'is-active' : ''}`}
+                      onClick={() => toggleCompressor(i)}
+                    >
+                      {compressorOn[i] ? 'ON(軽くならす)' : 'OFF'}
+                    </button>
                   </div>
                   {(gains[i] ?? 0) > 0 && (
                     <p className="clip-hint">波形が赤くなっている箇所は音割れ(クリップ)します</p>

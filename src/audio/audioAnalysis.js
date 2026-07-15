@@ -166,14 +166,16 @@ export function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
-/** AudioBufferの一部区間を16bit PCM WAVのBlobとして書き出す(元ツールと同じロジック)。gainは1.0が等倍 */
-export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime, gain = 1) {
-  const sampleRate = audioBuffer.sampleRate;
-  const numChannels = audioBuffer.numberOfChannels;
-  const startFrame = Math.max(0, Math.floor(startTime * sampleRate));
-  const endFrame = Math.min(audioBuffer.length, Math.ceil(endTime * sampleRate));
-  const frameCount = Math.max(0, endFrame - startFrame);
+// バンド練習音源向けの、軽くならす程度のコンプレッサー設定(固定値)
+export const COMPRESSOR_PRESET = {
+  threshold: -24, // dB. これを超えた分だけ圧縮される
+  knee: 30, // dB. しきい値付近をなだらかに移行
+  ratio: 3, // 3:1 (軽め)
+  attack: 0.02, // 秒
+  release: 0.25, // 秒
+};
 
+function encodeWavFromChannels(channelsData, frameCount, numChannels, sampleRate) {
   const bytesPerSample = 2;
   const blockAlign = numChannels * bytesPerSample;
   const dataSize = frameCount * blockAlign;
@@ -194,15 +196,10 @@ export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime, gain 
   writeAsciiString(view, 36, 'data');
   view.setUint32(40, dataSize, true);
 
-  const channels = [];
-  for (let c = 0; c < numChannels; c++) {
-    channels.push(audioBuffer.getChannelData(c));
-  }
-
   let offset = 44;
   for (let i = 0; i < frameCount; i++) {
     for (let c = 0; c < numChannels; c++) {
-      let sample = (channels[c][startFrame + i] || 0) * gain;
+      let sample = channelsData[c][i] || 0;
       sample = Math.max(-1, Math.min(1, sample));
       view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
       offset += 2;
@@ -210,6 +207,71 @@ export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime, gain 
   }
 
   return new Blob([buffer], { type: 'audio/wav' });
+}
+
+/** AudioBufferの一部区間を16bit PCM WAVのBlobとして書き出す(元ツールと同じロジック)。gainは1.0が等倍 */
+export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime, gain = 1) {
+  const sampleRate = audioBuffer.sampleRate;
+  const numChannels = audioBuffer.numberOfChannels;
+  const startFrame = Math.max(0, Math.floor(startTime * sampleRate));
+  const endFrame = Math.min(audioBuffer.length, Math.ceil(endTime * sampleRate));
+  const frameCount = Math.max(0, endFrame - startFrame);
+
+  const channels = [];
+  for (let c = 0; c < numChannels; c++) {
+    const src = audioBuffer.getChannelData(c);
+    const out = new Float32Array(frameCount);
+    for (let i = 0; i < frameCount; i++) {
+      out[i] = (src[startFrame + i] || 0) * gain;
+    }
+    channels.push(out);
+  }
+
+  return encodeWavFromChannels(channels, frameCount, numChannels, sampleRate);
+}
+
+/**
+ * 区間を音量調整+コンプレッサー(COMPRESSOR_PRESET固定値)適用済みでWAV Blobとして書き出す。
+ * コンプは時間方向の処理が必要なため、OfflineAudioContextで非リアルタイムレンダリングする。
+ */
+export async function sliceAudioBufferToWavBlobWithCompressor(audioBuffer, startTime, endTime, gain = 1) {
+  const sampleRate = audioBuffer.sampleRate;
+  const numChannels = audioBuffer.numberOfChannels;
+  const startFrame = Math.max(0, Math.floor(startTime * sampleRate));
+  const endFrame = Math.min(audioBuffer.length, Math.ceil(endTime * sampleRate));
+  const frameCount = Math.max(1, endFrame - startFrame);
+
+  const OfflineCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  const offlineCtx = new OfflineCtx(numChannels, frameCount, sampleRate);
+
+  const slice = offlineCtx.createBuffer(numChannels, frameCount, sampleRate);
+  for (let c = 0; c < numChannels; c++) {
+    const src = audioBuffer.getChannelData(c).subarray(startFrame, startFrame + frameCount);
+    slice.copyToChannel(src, c);
+  }
+
+  const source = offlineCtx.createBufferSource();
+  source.buffer = slice;
+
+  const compressor = offlineCtx.createDynamicsCompressor();
+  compressor.threshold.value = COMPRESSOR_PRESET.threshold;
+  compressor.knee.value = COMPRESSOR_PRESET.knee;
+  compressor.ratio.value = COMPRESSOR_PRESET.ratio;
+  compressor.attack.value = COMPRESSOR_PRESET.attack;
+  compressor.release.value = COMPRESSOR_PRESET.release;
+
+  const gainNode = offlineCtx.createGain();
+  gainNode.gain.value = gain;
+
+  source.connect(compressor).connect(gainNode).connect(offlineCtx.destination);
+  source.start();
+  const rendered = await offlineCtx.startRendering();
+
+  const channels = [];
+  for (let c = 0; c < numChannels; c++) {
+    channels.push(rendered.getChannelData(c));
+  }
+  return encodeWavFromChannels(channels, frameCount, numChannels, sampleRate);
 }
 
 /** 波形描画用に、全体をnumBuckets個のピーク(絶対値の最大)に間引く(元ツールと同じ) */
