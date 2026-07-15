@@ -9,6 +9,7 @@ import {
   sliceAudioBufferToWavBlob,
   drawWaveform,
   formatTime,
+  dbToLinear,
   ANALYSIS_INTERVAL_SEC,
   DEFAULT_ANALYSIS_OPTIONS,
 } from '../audio/audioAnalysis.js';
@@ -39,6 +40,8 @@ export default function SessionNew() {
   const canvasRef = useRef(null);
   const previewAudioRef = useRef(null);
   const boundedEndRef = useRef(null); // 曲単位プレビュー時の終了位置(そこで自動停止)
+  const audioCtxRef = useRef(null);
+  const gainNodeRef = useRef(null);
 
   const [stage, setStage] = useState('idle'); // idle | analyzing | review | saving
   const [isDragActive, setIsDragActive] = useState(false);
@@ -49,6 +52,7 @@ export default function SessionNew() {
   const [allSegments, setAllSegments] = useState([]); // play + silence(自動判定のまま)
   const [manualSplits, setManualSplits] = useState([]); // ユーザーが追加した分割点(秒)
   const [trimOverrides, setTrimOverrides] = useState({}); // index -> {start,end} (曲単位の前後トリム)
+  const [gains, setGains] = useState({}); // index -> dB (曲単位の音量調整。デフォルト0dB)
   const [editMode, setEditMode] = useState('preview'); // 'preview' | 'split'
   const [titles, setTitles] = useState({});
   const [settings, setSettings] = useState(DEFAULT_ANALYSIS_OPTIONS);
@@ -84,6 +88,25 @@ export default function SessionNew() {
     return () => cancelAnimationFrame(raf);
   }, [audioBuffer, allSegments, zoomActive, viewStart, viewEnd]);
 
+  // プレビュー再生をWeb AudioのGainNode経由にする(曲単位の音量調整を反映するため)
+  useEffect(() => {
+    if (!previewUrl || !previewAudioRef.current) return;
+    let ctx = audioCtxRef.current;
+    if (!ctx) {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      ctx = new AudioContextClass();
+      audioCtxRef.current = ctx;
+    }
+    const source = ctx.createMediaElementSource(previewAudioRef.current);
+    const gainNode = ctx.createGain();
+    source.connect(gainNode).connect(ctx.destination);
+    gainNodeRef.current = gainNode;
+    return () => {
+      source.disconnect();
+      gainNode.disconnect();
+    };
+  }, [previewUrl]);
+
   function recompute(nextSettings, buffer, rmsData) {
     const detected = detectSegments(rmsData, ANALYSIS_INTERVAL_SEC, buffer.duration, nextSettings);
     setAllSegments(detected);
@@ -103,6 +126,7 @@ export default function SessionNew() {
       setTitles({});
       setManualSplits([]);
       setTrimOverrides({});
+      setGains({});
       setDirty(false);
       setZoomActive(false);
       setPreviewUrl(URL.createObjectURL(file));
@@ -138,6 +162,7 @@ export default function SessionNew() {
     recompute(settings, audioBuffer, rms);
     setManualSplits([]); // 区間が変わるので手動分割点・トリムはリセット
     setTrimOverrides({});
+    setGains({});
     setDirty(false);
   }
 
@@ -212,12 +237,14 @@ export default function SessionNew() {
     } else {
       setManualSplits((prev) => [...prev, t].sort((a, b) => a - b));
     }
-    setTrimOverrides({}); // 区間の切れ目が変わるのでトリムはリセット
+    setTrimOverrides({}); // 区間の切れ目が変わるのでトリム・音量はリセット
+    setGains({});
   }
 
   function seekPreview(t) {
     const el = previewAudioRef.current;
     if (!el) return;
+    if (gainNodeRef.current) gainNodeRef.current.gain.value = 1; // 通常のプレビューは等倍
     el.currentTime = t;
     el.play();
   }
@@ -249,12 +276,17 @@ export default function SessionNew() {
     }
   }
 
-  function handlePreviewRange(start, end) {
+  function handlePreviewRange(start, end, gainDb = 0) {
     const el = previewAudioRef.current;
     if (!el) return;
+    if (gainNodeRef.current) gainNodeRef.current.gain.value = dbToLinear(gainDb);
     boundedEndRef.current = end;
     el.currentTime = start;
     el.play();
+  }
+
+  function handleGainChange(index, db) {
+    setGains((prev) => ({ ...prev, [index]: db }));
   }
 
   function updateTitle(index, title) {
@@ -286,7 +318,7 @@ export default function SessionNew() {
           startTime: seg.start,
           endTime: seg.end,
         });
-        const wavBlob = sliceAudioBufferToWavBlob(audioBuffer, seg.start, seg.end);
+        const wavBlob = sliceAudioBufferToWavBlob(audioBuffer, seg.start, seg.end, dbToLinear(gains[i] ?? 0));
         await saveTrackAudio(track.id, wavBlob);
       }
       navigate(`/session/${session.id}`);
@@ -521,8 +553,25 @@ export default function SessionNew() {
                     lowerBound={bounds.lower}
                     upperBound={bounds.upper}
                     onChange={(range) => handleTrimChange(i, range)}
-                    onPreview={handlePreviewRange}
+                    onPreview={(start, end) => handlePreviewRange(start, end, gains[i] ?? 0)}
+                    onSeek={(t) => handlePreviewRange(t, seg.end, gains[i] ?? 0)}
+                    currentPlayhead={playhead}
                   />
+                  <div className="gain-row">
+                    <span className="gain-label">音量調整</span>
+                    <input
+                      type="range"
+                      min="-18"
+                      max="18"
+                      step="1"
+                      value={gains[i] ?? 0}
+                      onChange={(e) => handleGainChange(i, Number(e.target.value))}
+                    />
+                    <span className="gain-value">
+                      {(gains[i] ?? 0) > 0 ? '+' : ''}
+                      {gains[i] ?? 0}dB
+                    </span>
+                  </div>
                 </div>
               );
             })}

@@ -161,8 +161,13 @@ function writeAsciiString(view, offset, str) {
   }
 }
 
-/** AudioBufferの一部区間を16bit PCM WAVのBlobとして書き出す(元ツールと同じロジック) */
-export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime) {
+// dB → リニアゲイン(音量調整・プレビュー再生の両方で使う)
+export function dbToLinear(db) {
+  return Math.pow(10, db / 20);
+}
+
+/** AudioBufferの一部区間を16bit PCM WAVのBlobとして書き出す(元ツールと同じロジック)。gainは1.0が等倍 */
+export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime, gain = 1) {
   const sampleRate = audioBuffer.sampleRate;
   const numChannels = audioBuffer.numberOfChannels;
   const startFrame = Math.max(0, Math.floor(startTime * sampleRate));
@@ -197,7 +202,7 @@ export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime) {
   let offset = 44;
   for (let i = 0; i < frameCount; i++) {
     for (let c = 0; c < numChannels; c++) {
-      let sample = channels[c][startFrame + i] || 0;
+      let sample = (channels[c][startFrame + i] || 0) * gain;
       sample = Math.max(-1, Math.min(1, sample));
       view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
       offset += 2;

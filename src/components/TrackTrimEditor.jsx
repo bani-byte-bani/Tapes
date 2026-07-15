@@ -7,7 +7,17 @@ const MIN_DURATION = 1; // トリムしても最低1秒は残す
  * 1曲分の波形をズーム表示し、開始/終了のハンドルをドラッグしてトリムできる。
  * 表示範囲(view)は前後に少し余白を持たせて、元の自動分割の境界も見えるようにしてある。
  */
-export default function TrackTrimEditor({ audioBuffer, original, value, lowerBound, upperBound, onChange, onPreview }) {
+export default function TrackTrimEditor({
+  audioBuffer,
+  original,
+  value,
+  lowerBound,
+  upperBound,
+  onChange,
+  onPreview,
+  onSeek,
+  currentPlayhead,
+}) {
   const canvasRef = useRef(null);
   const dragRef = useRef(null);
 
@@ -64,11 +74,20 @@ export default function TrackTrimEditor({ audioBuffer, original, value, lowerBou
   const startPct = pct(value.start);
   const endPct = pct(value.end);
   const isTrimmed = Math.abs(value.start - original.start) > 0.01 || Math.abs(value.end - original.end) > 0.01;
+  const playheadPct =
+    currentPlayhead != null && currentPlayhead >= view.start && currentPlayhead <= view.end ? pct(currentPlayhead) : null;
+
+  function handleCanvasClick(e) {
+    if (dragRef.current) return; // ドラッグ直後のクリックは無視
+    const t = timeFromClientX(e.clientX);
+    if (onSeek) onSeek(t);
+  }
 
   return (
     <div className="trim-editor">
       <div className="trim-canvas-wrap">
-        <canvas ref={canvasRef} className="waveform trim-waveform" />
+        <canvas ref={canvasRef} className="waveform trim-waveform" onClick={handleCanvasClick} />
+        {playheadPct !== null && <div className="playhead-line" style={{ left: `${playheadPct}%` }} />}
         <div className="trim-dim" style={{ left: 0, width: `${startPct}%` }} />
         <div className="trim-dim" style={{ right: 0, width: `${100 - endPct}%` }} />
         <div className="trim-kept" style={{ left: `${startPct}%`, width: `${Math.max(0, endPct - startPct)}%` }} />
