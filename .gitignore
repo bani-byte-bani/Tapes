@@ -1,0 +1,15 @@
+# 依存パッケージ・ビルド成果物(Cloudflare側で自動生成されるためコミットしない)
+node_modules/
+dist/
+
+# wrangler のローカル作業ディレクトリ
+.wrangler/
+
+# macOS
+.DS_Store
+
+# ログ・ローカル環境変数
+*.log
+npm-debug.log*
+.env
+.env.local
