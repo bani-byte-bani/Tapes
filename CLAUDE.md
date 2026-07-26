@@ -164,8 +164,8 @@ Source → DynamicsCompressor → Gain → Destination
 
 ## 規約
 
-- 曲単位の調整(トリム・音量・コンプ)はすべて `SessionNew.jsx` 内で**配列インデックスをキーにした状態**として持つ。区間構成が変わる操作(再判定 `handleReanalyze`・手動分割点の追加/削除)をしたら、`trimOverrides` / `gains` / `compressorOn` は必ずリセットする。
-  - **既知の例外:** `titles` はリセット対象に入っていない(リセットされるのは新規ファイル読み込み時のみ)。同じindexキー方式なので同じ危険があり、曲名を付けたあとに再判定すると名前が別の曲に残る。詳細は「既知の不整合」を参照。
+- 曲単位の調整(曲名・トリム・音量・コンプ)はすべて `SessionNew.jsx` 内で**配列インデックスをキーにした状態**として持つ。区間構成が変わる操作(再判定 `handleReanalyze`・手動分割点の追加/削除)をしたら、`titles` / `trimOverrides` / `gains` / `compressorOn` を**4つまとめて**リセットする。1つでも残すと、その設定が別の曲に付いてしまう。
+  - 新しくindexキーの状態を追加したら、上記2箇所のリセットにも必ず追加すること。
 - 区間データは段階的に導出される:
 
   ```
@@ -208,20 +208,25 @@ Source → DynamicsCompressor → Gain → Destination
 
 現状は手動アップロードのみ。自動化する場合、`applyPatch` はホワイトリスト方式の上書きでマージ処理を持たないため、**共有相手の編集を消す競合が起きる**。着手前に競合解決の方針(最終更新優先 / フィールド単位マージ 等)を決める必要がある。
 
-## 既知の不整合・制約
+## 名前について(意図的に統一していない)
 
-コードとドキュメントの間に残っている食い違い(2026-07-26時点):
+ドキュメント上のプロジェクト名は「TAPES」だが、**デプロイ上の識別子は `band-practice-review` のままにしてある**(`wrangler.toml` の `name`、`package.json` の `name`)。これは未対応の不整合ではなく、**意図的に触っていない**。
 
-- **`titles` がリセットされない** — `handleReanalyze`(`SessionNew.jsx:172-175`)と分割点の追加/削除(`同 250-252`)は `trimOverrides` / `gains` / `compressorOn` の3つだけをリセットし、`titles` を残す。リセットされるのは新規ファイル読み込み時(`134行目`)のみ。曲名を付けたあとに再判定すると、名前が別の曲に付いたままになる。
-- **`src/main.jsx:8` のコメントが古い** — 「SPAフォールバックは `public/_redirects` で設定」とあるが `public/` は存在しない(旧構成の遺物)。実際は `wrangler.toml` の `not_found_handling` が担当。
-- **`src/repository/remoteRepository.js:2` のコメントが古い** — 「Cloudflare Pages Functions経由」とあるが実体はWorker。
-- **プロジェクト名が未統一** — ドキュメント上は「TAPES」だが、`package.json` / `wrangler.toml` は `band-practice-review`、`<title>` は「バンド練習レビュー」。`update_worker_name_to_tapes` ブランチが未マージのまま残っている。
-- **`.DS_Store` がコミット済み**(ルートと `src/`)。`.gitignore` は追加済みだが、追跡済みファイルはignoreされないため `git rm --cached` が別途必要。
+`wrangler.toml` の `name` は workers.dev のサブドメインを決めるため、変更すると配信URLが変わり、**すでに発行済みの共有リンク(`https://<name>.workers.dev/r/<shareId>`)が全て404になる**。共有URLは `worker/index.js` がリクエストのoriginから組み立てており(`140行目`)、旧URLへのリダイレクトも用意していない。
+
+- リネームする場合は、先にカスタムドメインを当ててURLを固定するか、共有リンクが失効してよいことを確認すること。
+- `update_worker_name_to_tapes` ブランチがこのリネームだけを含んだまま残っている。**上記を理解せずマージしない。**
+
+## 既知の制約
+
 - **表示名は端末ローカル** — IndexedDBの `settings` に保存するため、別端末では再入力が必要。
 - **複数Band非対応。**
 - **共有音声の削除機能はない**(R2上のオブジェクトは残り続ける)。
 - **Android実機(Chrome)での動作確認が未実施。**
-- `npm install` 時に脆弱性警告(moderate 3 / high 4)が出る。ビルドは通る。
+- **依存の脆弱性が4件残っている**(moderate 3 / high 1)。いずれも解消にメジャーアップグレードが必要なため未対応:
+  - `esbuild` / `vite` — 解消には Vite 8 への破壊的アップグレードが必要。advisoryの影響範囲は**開発サーバー(`npm run dev`)のみ**で、ビルド成果物には及ばない。
+  - `react-router` — 解消には react-router-dom 7 系へのメジャー移行が必要(現在 `^6.26.2`)。`<Link>` / `useNavigate` のバックスラッシュによるオープンリダイレクトで、**本番にも影響しうる**。移行の是非は要判断。
+  - 破壊的変更なしで直せる分(`sharp` / `miniflare` 経由の high 3件)は `npm audit fix` 適用済み。
 
 ## 変更時のチェックリスト
 
