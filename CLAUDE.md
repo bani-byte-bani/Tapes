@@ -1,31 +1,48 @@
 # CLAUDE.md
 
-このリポジトリで作業するAIアシスタント向けのガイドです。コードベースの構造・開発フロー・守るべき規約をまとめています。
+TAPES(バンド練習レビューサービス)のプロジェクトメモリ。詳細な機能一覧・セットアップ手順は `README.md` を参照。ここでは実装時にはまりやすい点・規約を中心にまとめる。
 
-## プロジェクト概要
+> **このドキュメントの読み方**
+> 「現行実装」と明記した節は、コードの実態と一致していることを確認済み(最終確認: 2026-07-26)。
+> 「今後の設計案」の節は**まだ実装されていない**構想であり、現行コードには存在しない。両者を混同しないこと。
 
-バンドの練習録音をレビューするためのWebアプリ(MVP)。1本の長い練習録音をアップロードすると、無音区間を検出して曲単位に自動分割し、タイトル付け・トリム・音量調整をしてから保存する。保存後は曲ごとに再生・★評価・タイムラインコメントができ、リンクを発行してメンバーと共有できる。
+## 概要
 
-- **ログイン機能はない。** ユーザー識別も認証もしない。ローカルデータはブラウザのIndexedDB、共有データはCloudflare R2に置き、共有は「URLを知っている人だけがアクセスできる」方式(編集はURLクエリの`token`で判定)。
-- **1ブラウザ = 1Band** に簡略化されている(`DEFAULT_BAND_ID = 'default-band'`)。
-- モバイル(Android Chrome)での利用を主に想定した縦1カラムUI(`.app-shell`は`max-width: 480px`)。
+長時間のバンド練習録音を自動分割し、曲ごとにレビュー(★・コメント・トリム・音量・コンプ)できるWebアプリ。ログイン不要。**ローカルファースト(IndexedDB)+共有時のみクラウド(R2)** という設計が全体の前提。
+
+- ユーザー識別も認証もしない。共有は「URLを知っている人だけがアクセスできる」方式(編集はURLクエリの `token` で判定)。
+- **1ブラウザ = 1Band** に簡略化(`DEFAULT_BAND_ID = 'default-band'`)。複数Band対応は意図的に見送り。
+- モバイル(Android Chrome)での利用を主に想定した縦1カラムUI(`.app-shell` は `max-width: 480px`)。
+
+## 技術スタック
+
+- フロントエンド: React + Vite (`src/`)。ビルド: `npm run build` → `dist/`
+- バックエンド: Cloudflare Workers + 静的アセット配信(`worker/index.js` + `wrangler.toml` の `[assets]`)。**Cloudflare Pages Functions ではない**(2026年以降、Cloudflareのダッシュボードは新規プロジェクトをWorkers方式に倒す傾向があり、それに合わせた構成)
+- ストレージ: IndexedDB(`src/db/indexedDB.js`、ローカル)、R2(共有時のみ、`worker/index.js` 経由)
+- デプロイ: GitHub連携 → Cloudflare Workers Builds が `npm run build` → `npx wrangler deploy` を自動実行
 
 ## コマンド
 
 ```bash
-npm install        # 依存インストール
-npm run dev        # Vite開発サーバー(フロントのみ。/api/* は動かない)
-npm run build      # dist/ へビルド
-npm run preview    # ビルド結果のプレビュー(こちらも /api/* は動かない)
-npx wrangler dev   # Worker + 静的アセットをまとめてローカル実行(/api/* を試すならこれ。要 npm run build)
+npm install         # 依存インストール
+npm run dev         # Vite開発サーバー(フロントのみ。/api/* は動かない)
+npm run build       # dist/ へビルド
+npm run preview     # ビルド結果のプレビュー(こちらも /api/* は動かない)
+npx wrangler dev    # Worker + 静的アセットをまとめてローカル実行(/api/* を試すならこれ。要 npm run build)
+npx wrangler deploy --dry-run  # デプロイ前の設定検証(バインディングが読めるか確認)
 npx wrangler deploy # 本番デプロイ(通常はCloudflareのGit連携が自動実行する)
 ```
 
-**テストもリンターも設定されていない。** テストランナー・ESLint・Prettier・TypeScriptはいずれも導入されていないので、「テストを流す」「lintする」といった検証手段は存在しない。変更の確認は `npm run build` が通ることと、実際にブラウザで動かすことで行う。テスト基盤を勝手に導入しない(必要だと思ったら提案するにとどめる)。
+`--dry-run` が成功すると、以下のバインディングが認識される:
 
-## アーキテクチャ
+```
+env.BUCKET (band-practice-review)      R2 Bucket
+env.ASSETS                             Assets
+```
 
-3つのレイヤーで構成される。
+**テストもリンターも設定されていない。** テストランナー・ESLint・Prettier・TypeScriptはいずれも未導入なので、「テストを流す」「lintする」といった検証手段は存在しない。変更の確認は `npm run build` が通ることと、実際にブラウザで動かすことで行う。テスト基盤を勝手に導入しない(必要だと思ったら提案するにとどめる)。
+
+## アーキテクチャ(現行実装)
 
 ```
 ブラウザ (React SPA, src/)
@@ -41,13 +58,12 @@ npx wrangler deploy # 本番デプロイ(通常はCloudflareのGit連携が自�
 
 - ビルド成果物 `dist/` はWorkers Static Assetsとして配信される(`wrangler.toml` の `[assets]`)。
 - `run_worker_first = ["/api/*"]` により、**Workerスクリプトに届くのは `/api/*` だけ**。それ以外のパスは静的アセットが処理し、`not_found_handling = "single-page-application"` によってSPAのディープリンク(`/r/xxxx` など)も自動でindex.htmlにフォールバックする。React Router は `BrowserRouter`(ハッシュルーティングではない)。
-- Cloudflare Pages **ではなく** Workers with static assets 構成。`src/repository/remoteRepository.js` 冒頭に「Cloudflare Pages Functions経由」と書かれたコメントが残っているが、これは古い記述で実体はWorker。
 
 ### ディレクトリ
 
 | パス | 役割 |
 | --- | --- |
-| `src/main.jsx` | エントリ。`BrowserRouter` でApp をマウント |
+| `src/main.jsx` | エントリ。`BrowserRouter` でAppをマウント |
 | `src/App.jsx` | ルーティング定義(全ルートがここに集約) |
 | `src/pages/` | 画面単位のコンポーネント |
 | `src/components/` | 画面をまたいで使う部品 |
@@ -59,7 +75,7 @@ npx wrangler deploy # 本番デプロイ(通常はCloudflareのGit連携が自�
 | `src/styles.css` | 全スタイル(CSS Modules等は使っていない、単一のグローバルCSS) |
 | `worker/index.js` | `/api/*` のハンドラ(共有の作成・取得・更新・音声配信) |
 
-**リポジトリへのデータアクセスは必ず `src/repository/` 経由で行う。** ページ/コンポーネントから直接 `getDB()` や `fetch('/api/...')` を呼ばないこと。
+**データアクセスは必ず `src/repository/` 経由で行う。** ページ/コンポーネントから直接 `getDB()` や `fetch('/api/...')` を呼ばないこと。
 
 ### ルート
 
@@ -107,68 +123,112 @@ npx wrangler deploy # 本番デプロイ(通常はCloudflareのGit連携が自�
   createdAt, updatedAt }
 ```
 
-## 音声処理の規約(ここが一番壊しやすい)
+## 音声処理(現行実装)
 
-`src/audio/audioAnalysis.js` の解析・WAV書き出しロジックは、既存ツール `rehearsal-rec-splitter.html` (build: 2026-07-10) の実コードからの**移植**であり、挙動を元ツールと一致させることが前提になっている。数値やアルゴリズムを「改善」目的で勝手に変えないこと。
+`src/audio/audioAnalysis.js` の解析・WAV書き出しロジックは、既存ツール `rehearsal-rec-splitter.html` (build: 2026-07-10) の実コードからの**移植**であり、挙動を元ツールと一致させることが前提。数値やアルゴリズムを「改善」目的で勝手に変えないこと。
 
 - `ANALYSIS_INTERVAL_SEC = 0.2` — RMS解析の時間刻み(固定値)。
-- 無音判定のしきい値は **絶対dBFS基準**(`dbToRms()`)。ファイル内の最大振幅を基準にした相対値では**ない**。
+- **無音判定は絶対dBFS基準。** グローバル最大振幅に対する相対値ではない。変換に使うのは `audioAnalysis.js` 内の**非公開関数 `dbToRms()`**(24行目)。エクスポートされている `dbToLinear()`(165行目)は**音量調整用の別関数**で、式は同一だが用途が違う。取り違えないこと。
 - `computeRMS()` は全チャンネルをミックスダウンせず、全チャンネルのサンプルをまとめて二乗平均する(元ツールと同じ)。重い処理なので `onProgress` で進捗を返す。
 - `detectSegments()` は「連結 → 最小演奏時間未満のplayをsilence化 → 再連結」の3段構成。返り値は `{ type: 'play'|'silence', start, end }`(秒)。
 - デフォルト値 `DEFAULT_ANALYSIS_OPTIONS`: 無音判定時間60秒 / 閾値-30dB / 最小演奏時間3秒。UIのスライダー範囲(10-600 / -60〜-10 / 0-180)も元ツール準拠。
-- `COMPRESSOR_PRESET`(-24dB / knee 30 / 3:1 / attack 20ms / release 250ms)はバンド練習音源向けの固定値。UIから変更させない設計。値を変えたい要望が来たらここを編集する。
 - 波形描画 `drawWaveform(canvas, buffer, segments, viewRange, gain)` は canvas を都度 devicePixelRatio でリサイズする。`gain > 1` でクリップする部分は警告色(`#b0503f`)で描く。
+
+### 現行の処理チェーン
+
+**現時点のエフェクトは `COMPRESSOR_PRESET` 固定値のコンプレッサー ON/OFF のみ。** Limiter も Makeup Gain もプリセット選択UIも存在しない。実際のチェーンは両経路とも3段:
+
+```
+Source → DynamicsCompressor → Gain → Destination
+```
+
+- プレビュー(リアルタイム、`AudioContext`): `SessionNew.jsx:108`
+- 保存WAV(`OfflineAudioContext`): `audioAnalysis.js:266`
+- コンプのバイパスは `ratio = 1` で表現する(ノードを外すのではなく)。
+- `COMPRESSOR_PRESET`(-24dB / knee 30 / 3:1 / attack 20ms / release 250ms)はバンド練習音源向けの固定値。UIから変更させない設計。値を変えたい要望が来たらここを編集する。
+- **チェーンの構築コードは2箇所に重複している**(プレビュー側と保存側)。共有しているのは `COMPRESSOR_PRESET` 定数だけなので、**片方だけ変更するとプレビューと保存結果がズレる**。必ず両方を直すこと。
 
 ### 音声フォーマットの使い分け
 
 - **ローカル保存(IndexedDB)は非圧縮WAV。** `sliceAudioBufferToWavBlob()`(コンプOFF)/ `sliceAudioBufferToWavBlobWithCompressor()`(コンプON、`OfflineAudioContext` でレンダリング)。
 - **共有(R2アップロード)時のみMP3に変換する。** `ShareModal` が保存済みWAVを `convertWavBlobToMp3Blob()` で128kbps MP3にしてからアップロードする。
-- 音量調整(`gains`)とコンプのON/OFFは、**プレビュー再生・保存WAV・共有MP3のすべてに同じように反映される**。片方だけ変えると聴こえ方と保存内容がずれるので注意。
+- 音量調整(`gains`)とコンプのON/OFFは、**プレビュー再生・保存WAV・共有MP3のすべてに同じように反映される**。片方だけ変えると聴こえ方と保存内容がずれる。
 
-### SessionNew の状態管理
+## はまりやすい点
 
-`src/pages/SessionNew.jsx` は最も複雑な画面(600行超)。区間データは段階的に導出される:
+- **lamejs**: npm版 `lamejs`(1.2.1)はViteなどのESMバンドラーで `MPEGMode is not defined` エラーになる既知の不具合がある。必ず `@breezystack/lamejs` を使うこと(`src/audio/mp3Encoder.js`)。
+- **無音判定の閾値は絶対dBFS**(上記「音声処理」参照)。相対値に変えない。
+- **プレビューと保存でパラメータをズラさない**。現状はチェーン構築が2箇所に重複しているため、変更時は両方を手で合わせる必要がある。
+- **共有後はR2が正本**: ローカルIndexedDBの変更は自動同期されない(Session詳細の「更新をアップロード」で手動反映)。この操作は共有相手が追加した内容を上書きする可能性がある(マージ処理は未実装)。
+- **`SessionNew.jsx` のindexキー状態**(下記「規約」参照)。区間構成が変わるとindexの意味が変わる。
 
-```
-allSegments (自動判定 play+silence)
-  → playSegmentsOnly()      … play だけ
-  → splitPlaySegments()     … 手動分割点で更に分割 = finalSegs
-  → trimOverrides を適用     … = effectiveSegs(保存対象)
-```
+## 規約
 
-- 曲ごとの設定(`titles` / `trimOverrides` / `gains` / `compressorOn`)は**曲IDではなく配列インデックスをキーにしている**。区間の切れ目が変わるとインデックスの意味が変わるため、再判定(`handleReanalyze`)や手動分割点の増減時にこれらを**まとめてリセットする**。この扱いを崩すと設定が別の曲に付いてしまう。
+- 曲単位の調整(トリム・音量・コンプ)はすべて `SessionNew.jsx` 内で**配列インデックスをキーにした状態**として持つ。区間構成が変わる操作(再判定 `handleReanalyze`・手動分割点の追加/削除)をしたら、`trimOverrides` / `gains` / `compressorOn` は必ずリセットする。
+  - **既知の例外:** `titles` はリセット対象に入っていない(リセットされるのは新規ファイル読み込み時のみ)。同じindexキー方式なので同じ危険があり、曲名を付けたあとに再判定すると名前が別の曲に残る。詳細は「既知の不整合」を参照。
+- 区間データは段階的に導出される:
+
+  ```
+  allSegments (自動判定 play+silence)
+    → playSegmentsOnly()      … play だけ
+    → splitPlaySegments()     … 手動分割点で更に分割 = finalSegs
+    → trimOverrides を適用     … = effectiveSegs(保存対象)
+  ```
+
 - 波形は `editMode` が `'preview'`(ズーム・タップ追従あり)と `'split'`(常に全体表示、タップで分割点を追加/削除)の2モード。ズームはプレビューモード専用。
-- プレビュー再生は `<audio>` を `createMediaElementSource` でWeb Audioにつなぎ、GainNode/DynamicsCompressorNode を経由させている。コンプのバイパスは `ratio = 1` で表現している。
+- データ取得はリポジトリパターンで抽象化(`localRepository.js` vs `remoteRepository.js`)。
+  - ただし**現状は画面単位で分離しているだけ**で、1つのコンポーネントが両対応しているわけではない(`SessionDetail` / `TrackPlayer` はローカル専用、`ShareViewer` は共有専用)。例外として `NicknameField` は共有画面から使われるが `localRepository` を直接importしている(表示名は端末ローカルのため)。
+- **UI文言もコードコメントも日本語。** 既存の口調(です・ます、簡潔な説明)に合わせる。
+- プレーンJavaScript + JSX。**TypeScriptは使っていない**ので `.ts` / `.tsx` を追加しない。
+- 状態管理ライブラリなし。`useState` / `useEffect` とローカル関数で完結させる。
+- スタイルは `src/styles.css` に集約。色は必ずCSS変数(`--color-ink`, `--color-accent` など)を使う。テープ/カセット風のレトロな配色(生成りの背景 + 琥珀色のアクセント)を守る。インラインstyleは局所的な微調整に限れば許容。
+- 依存の追加は慎重に。現状は React / react-router-dom / idb / nanoid / @breezystack/lamejs のみ。
+- ファイル間のimportは拡張子つき(`'./foo.jsx'`, `'../audio/audioAnalysis.js'`)で書く。
 
-## コーディング規約
+## 今後の設計案(未実装)
 
-- **UI文言もコードコメントも日本語。** 新しいコメント・エラーメッセージ・画面テキストは日本語で書く。既存の口調(です・ます、簡潔な説明)に合わせる。
-- プレーンJavaScript + JSX。**TypeScriptは使っていない**ので、`.ts` / `.tsx` を追加しない。
-- 状態管理ライブラリなし。`useState` / `useEffect` とローカル関数で完結させる。Redux等を持ち込まない。
-- スタイルは `src/styles.css` に集約。色は必ずCSS変数(`--color-ink`, `--color-accent` など)を使う。テープ/カセット風のレトロな配色(生成りの背景 + 琥珀色のアクセント)を守る。インラインstyleは既存コードでも細かい調整に使われているので、局所的な微調整に限れば許容。
-- 依存の追加は慎重に。現状の依存は React / react-router-dom / idb / nanoid / @breezystack/lamejs のみ。
-- ファイル間のimportは拡張子つき(`'./foo.jsx'`, `'../audio/audioAnalysis.js'`)で書かれている。この書き方に合わせる。
+> **以下はすべて構想であり、現行コードには存在しない。** 実装済みと誤解しないこと。
+> 着手時はこの節の内容を「現行実装」の節へ移動し、この節から削除する。
 
-## デプロイ
+### Audio Enhancement(プリセット方式のエフェクトチェーン)
 
-CloudflareのGit連携で自動デプロイされる(Build: `npm run build` → Deploy: `npx wrangler deploy`)。手順の詳細と初回セットアップは `README.md` の「セットアップ手順」を参照。
+現状の「コンプON/OFF」を、複数プリセットから選ぶ方式へ拡張する構想。実装する場合は以下の設計判断に従う:
 
-- R2バケット名は `wrangler.toml` の `bucket_name`(現在 `band-practice-review`)と、Cloudflare上に作成したバケット名が**一致している必要がある**。
-- `/api/share` などが404/500になる場合、まずバケット名の不一致とバインディング(`BUCKET`)を疑う。
+- **想定チェーン**: `Source → Compressor → Makeup Gain → 手動音量調整 → Limiter → Destination`
+- **Limiterは処理チェーンの最終段に置く。** 手動音量調整をLimiterより前に置かないと、ユーザーが音量を上げた分がクリッピング防止の対象から漏れる。
+- **プレビューと書き出しで単一のソースを共有する。** プレビュー(`AudioContext`)と保存(`OfflineAudioContext`)でパラメータがズレないよう、`ENHANCEMENT_PRESETS`(`src/audio/audioAnalysis.js` に新設)を唯一の定義元とする。現行の `COMPRESSOR_PRESET` はこれに統合する想定。あわせて、現在2箇所に重複しているチェーン構築コードも共通化したい。
+- **プリセット切り替え時は `setTargetAtTime` で滑らかに変化させる。** 直接 `.value =` で切り替えるとプチノイズが出る。現行コードは全箇所で直接代入しているため、この規約は移行時に導入することになる。
+- 曲単位の状態キー(現 `compressorOn`)は `enhancement` にリネームする想定。indexキーのリセット規約は現行と同じ。
 
-## 既知の制約・未実装(触るときの前提)
+### 簡易EQプリセット
 
-- **共有後のローカル編集は自動で反映されない。** 共有済みセッションのタイトルや★をローカルで変更しても、R2側は更新されない。SessionDetail →「共有リンクを表示」→「更新をアップロード」で手動反映する。この操作は共有相手が追加した内容を上書きする可能性がある(マージ処理は実装されていない)。
-- **表示名は端末ローカル。** IndexedDBの`settings`に保存するため、別端末では再入力が必要。
+細かいパラメトリックEQではなく、「ハイを少し持ち上げる」「ローを少し持ち上げる」程度の2〜3種類のプリセットボタン。`BiquadFilterNode`(シェルビング)で実現可能。**Audio Enhancement のチェーン再設計と同時に着手するのが望ましい**(EQ単体を現行の3段チェーンに足すと、後でチェーンを組み直す際に二度手間になる)。
+
+### 共有後のローカル編集の自動反映
+
+現状は手動アップロードのみ。自動化する場合、`applyPatch` はホワイトリスト方式の上書きでマージ処理を持たないため、**共有相手の編集を消す競合が起きる**。着手前に競合解決の方針(最終更新優先 / フィールド単位マージ 等)を決める必要がある。
+
+## 既知の不整合・制約
+
+コードとドキュメントの間に残っている食い違い(2026-07-26時点):
+
+- **`titles` がリセットされない** — `handleReanalyze`(`SessionNew.jsx:172-175`)と分割点の追加/削除(`同 250-252`)は `trimOverrides` / `gains` / `compressorOn` の3つだけをリセットし、`titles` を残す。リセットされるのは新規ファイル読み込み時(`134行目`)のみ。曲名を付けたあとに再判定すると、名前が別の曲に付いたままになる。
+- **`src/main.jsx:8` のコメントが古い** — 「SPAフォールバックは `public/_redirects` で設定」とあるが `public/` は存在しない(旧構成の遺物)。実際は `wrangler.toml` の `not_found_handling` が担当。
+- **`src/repository/remoteRepository.js:2` のコメントが古い** — 「Cloudflare Pages Functions経由」とあるが実体はWorker。
+- **プロジェクト名が未統一** — ドキュメント上は「TAPES」だが、`package.json` / `wrangler.toml` は `band-practice-review`、`<title>` は「バンド練習レビュー」。`update_worker_name_to_tapes` ブランチが未マージのまま残っている。
+- **`.DS_Store` がコミット済み**(ルートと `src/`)。`.gitignore` は追加済みだが、追跡済みファイルはignoreされないため `git rm --cached` が別途必要。
+- **表示名は端末ローカル** — IndexedDBの `settings` に保存するため、別端末では再入力が必要。
 - **複数Band非対応。**
-- 共有音声の削除機能はない(R2上のオブジェクトは残り続ける)。
-- `.gitignore` が存在しない(READMEには同梱と書かれているが実際にはない)。`node_modules/` と `dist/` をコミットしないよう注意する。`.DS_Store` が誤ってコミットされている。
-- 今後の候補としてREADMEに「簡易EQプリセット(BiquadFilterNodeのシェルビングで2〜3種類のプリセットボタン)」がメモされている。
+- **共有音声の削除機能はない**(R2上のオブジェクトは残り続ける)。
+- **Android実機(Chrome)での動作確認が未実施。**
+- `npm install` 時に脆弱性警告(moderate 3 / high 4)が出る。ビルドは通る。
 
 ## 変更時のチェックリスト
 
 1. `npm run build` が通るか(唯一の自動検証手段)。
-2. IndexedDBのスキーマを触ったなら `DB_VERSION` を上げ、既存データが壊れないか確認したか。
-3. `worker/index.js` を触ったなら、`editToken` / `audioKeys` がレスポンスに漏れていないか。
-4. 音声処理を触ったなら、プレビュー再生・保存WAV・共有MP3の3経路すべてに同じ効果が反映されるか。
-5. `README.md` に書かれている仕様(スライダー範囲、コンプの固定値、共有の挙動など)を変えたなら、READMEも合わせて更新したか。
+2. `wrangler.toml` を触ったなら `npx wrangler deploy --dry-run` でバインディングが読めるか。
+3. IndexedDBのスキーマを触ったなら `DB_VERSION` を上げ、既存データが壊れないか確認したか。
+4. `worker/index.js` を触ったなら、`editToken` / `audioKeys` がレスポンスに漏れていないか。
+5. 音声処理を触ったなら、**プレビュー再生・保存WAV・共有MP3の3経路すべて**に同じ効果が反映されるか(チェーン構築は2箇所に重複している)。
+6. `README.md` に書かれている仕様(スライダー範囲、コンプの固定値、共有の挙動など)を変えたなら、READMEも合わせて更新したか。
+7. 「今後の設計案」の機能を実装したなら、該当節を「現行実装」へ移したか。
