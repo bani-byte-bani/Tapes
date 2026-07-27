@@ -1,5 +1,5 @@
 // 共有されたSessionを扱うリポジトリ。
-// データソースはIndexedDBではなく Cloudflare Pages Functions (/api/...) 経由のR2。
+// データソースはIndexedDBではなく Cloudflare Worker (/api/...) 経由のR2。
 
 export async function fetchSharedSession(shareId) {
   const res = await fetch(`/api/r/${shareId}`);

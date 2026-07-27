@@ -169,10 +169,13 @@ export default function SessionNew() {
   function handleReanalyze() {
     if (!rms || !audioBuffer) return;
     recompute(settings, audioBuffer, rms);
-    setManualSplits([]); // 区間が変わるので手動分割点・トリムはリセット
+    // 区間が変わるとindexの意味が変わるため、indexキーの状態はまとめてリセットする
+    // (曲名も対象。残すと別の曲に前の名前が付いてしまう)
+    setManualSplits([]);
     setTrimOverrides({});
     setGains({});
     setCompressorOn({});
+    setTitles({});
     setDirty(false);
   }
 
@@ -247,9 +250,11 @@ export default function SessionNew() {
     } else {
       setManualSplits((prev) => [...prev, t].sort((a, b) => a - b));
     }
-    setTrimOverrides({}); // 区間の切れ目が変わるのでトリム・音量はリセット
+    // 区間の切れ目が変わるとindexの意味が変わるため、indexキーの状態はまとめてリセットする
+    setTrimOverrides({});
     setGains({});
     setCompressorOn({});
+    setTitles({});
   }
 
   function seekPreview(t) {
