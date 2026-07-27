@@ -183,6 +183,7 @@ Source → DynamicsCompressor → Gain → Destination
 - 状態管理ライブラリなし。`useState` / `useEffect` とローカル関数で完結させる。
 - スタイルは `src/styles.css` に集約。色は必ずCSS変数(`--color-ink`, `--color-accent` など)を使う。テープ/カセット風のレトロな配色(生成りの背景 + 琥珀色のアクセント)を守る。インラインstyleは局所的な微調整に限れば許容。
 - 依存の追加は慎重に。現状は React / react-router-dom / idb / nanoid / @breezystack/lamejs のみ。
+  - **react-router-dom は 7系**(`^7.18.1`)。使っているのは `BrowserRouter` / `Routes` / `Route` / `Link` / `useNavigate` / `useParams` / `useSearchParams` の7つだけで、データルーター系(`loader` / `action` / `errorElement`)は未使用。この範囲に留める限りv6/v7で書き方は変わらない。
 - ファイル間のimportは拡張子つき(`'./foo.jsx'`, `'../audio/audioAnalysis.js'`)で書く。
 
 ## 今後の設計案(未実装)
@@ -223,10 +224,10 @@ Source → DynamicsCompressor → Gain → Destination
 - **複数Band非対応。**
 - **共有音声の削除機能はない**(R2上のオブジェクトは残り続ける)。
 - **Android実機(Chrome)での動作確認が未実施。**
-- **依存の脆弱性が4件残っている**(moderate 3 / high 1)。いずれも解消にメジャーアップグレードが必要なため未対応:
+- **依存の脆弱性が `npm audit` に残っている**。現時点でいずれも本番影響なしと判断しているが、内容を理解せず「0件にする」ためだけに `--force` を当てないこと:
   - `esbuild` / `vite` — 解消には Vite 8 への破壊的アップグレードが必要。advisoryの影響範囲は**開発サーバー(`npm run dev`)のみ**で、ビルド成果物には及ばない。
-  - `react-router` — 解消には react-router-dom 7 系へのメジャー移行が必要(現在 `^6.26.2`)。`<Link>` / `useNavigate` のバックスラッシュによるオープンリダイレクトで、**本番にも影響しうる**。移行の是非は要判断。
-  - 破壊的変更なしで直せる分(`sharp` / `miniflare` 経由の high 3件)は `npm audit fix` 適用済み。
+  - `react-router` (high) — 「RSC Mode CSRF Bypass」。影響範囲は `>=7.12.0 <8.3.0` で 7.18.1 も含まれるが、**内容がRSC(React Server Components)モード専用**であり、本アプリはサーバーを持たないクライアント専用SPA(`BrowserRouter` + 静的配信、loader/actionも未使用)なので該当しない。解消するには `react-router` 8.3.0 が必要だが、`react-router-dom` は 7.18.1 が最新で 8.x が存在しないため、移行するなら import 元を `react-router` に切り替えることになる。
+  - 解消済み: `sharp` / `miniflare` 経由の high 3件(`npm audit fix`)、react-router のオープンリダイレクト(v7移行で解消)。
 
 ## 変更時のチェックリスト
 
