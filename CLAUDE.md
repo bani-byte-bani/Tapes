@@ -8,7 +8,7 @@ TAPES(バンド練習レビューサービス)のプロジェクトメモリ。�
 
 ## 概要
 
-長時間のバンド練習録音を自動分割し、曲ごとにレビュー(★・コメント・トリム・音量・コンプ)できるWebアプリ。ログイン不要。**ローカルファースト(IndexedDB)+共有時のみクラウド(R2)** という設計が全体の前提。
+長時間のバンド練習録音を自動分割し、曲ごとにレビュー(★・コメント・トリム・音量・音質補正・EQ)できるWebアプリ。ログイン不要。**ローカルファースト(IndexedDB)+共有時のみクラウド(R2)** という設計が全体の前提。
 
 - ユーザー識別も認証もしない。共有は「URLを知っている人だけがアクセスできる」方式(編集はURLクエリの `token` で判定)。
 - **1ブラウザ = 1Band** に簡略化(`DEFAULT_BAND_ID = 'default-band'`)。複数Band対応は意図的に見送り。
@@ -72,6 +72,7 @@ env.ASSETS                             Assets
 | `src/db/indexedDB.js` | IndexedDBのスキーマ定義(`idb`ラッパー) |
 | `src/repository/localRepository.js` | IndexedDBへのアクセスを集約 |
 | `src/repository/remoteRepository.js` | `/api/*` へのアクセスを集約 |
+| `src/repository/shareSync.js` | 共有済みSessionへの自動反映(後勝ちの差分更新) |
 | `src/styles.css` | 全スタイル(CSS Modules等は使っていない、単一のグローバルCSS) |
 | `worker/index.js` | `/api/*` のハンドラ(共有の作成・取得・更新・音声配信) |
 
@@ -134,37 +135,40 @@ env.ASSETS                             Assets
 - デフォルト値 `DEFAULT_ANALYSIS_OPTIONS`: 無音判定時間60秒 / 閾値-30dB / 最小演奏時間3秒。UIのスライダー範囲(10-600 / -60〜-10 / 0-180)も元ツール準拠。
 - 波形描画 `drawWaveform(canvas, buffer, segments, viewRange, gain)` は canvas を都度 devicePixelRatio でリサイズする。`gain > 1` でクリップする部分は警告色(`#b0503f`)で描く。
 
-### 現行の処理チェーン
+### 現行の処理チェーン(Audio Enhancement)
 
-**現時点のエフェクトは `COMPRESSOR_PRESET` 固定値のコンプレッサー ON/OFF のみ。** Limiter も Makeup Gain もプリセット選択UIも存在しない。実際のチェーンは両経路とも3段:
+曲ごとに **音質補正(ダイナミクス)** と **EQ** をプリセットから選べる。チェーンは6段:
 
 ```
-Source → DynamicsCompressor → Gain → Destination
+Source → EQ → Compressor → Makeup Gain → 手動音量調整 → Limiter → SoftClip → Destination
 ```
 
-- プレビュー(リアルタイム、`AudioContext`): `SessionNew.jsx:108`
-- 保存WAV(`OfflineAudioContext`): `audioAnalysis.js:266`
-- コンプのバイパスは `ratio = 1` で表現する(ノードを外すのではなく)。
-- `COMPRESSOR_PRESET`(-24dB / knee 30 / 3:1 / attack 20ms / release 250ms)はバンド練習音源向けの固定値。UIから変更させない設計。値を変えたい要望が来たらここを編集する。
-- **チェーンの構築コードは2箇所に重複している**(プレビュー側と保存側)。共有しているのは `COMPRESSOR_PRESET` 定数だけなので、**片方だけ変更するとプレビューと保存結果がズレる**。必ず両方を直すこと。
+- 定義元は `audioAnalysis.js` の `ENHANCEMENT_PRESETS` / `EQ_PRESETS` **だけ**。値を変えたいときはここを直せばプレビュー・保存WAV・共有MP3の全部に反映される。
+- **チェーンの組み立ても `createEnhancementChain()` に集約済み。** プレビュー(`AudioContext`)と書き出し(`OfflineAudioContext`)が同じ関数を呼ぶので、以前のような「2箇所に重複していて片方だけ直すとズレる」問題はない。**この集約を崩さないこと。**
+- **Limiterは必ず手動音量調整より後に置く。** 前に置くと、ユーザーが上げた分がクリッピング防止の対象から漏れる。
+- **SoftClip(WaveShaper)が最終段にいる理由:** `DynamicsCompressorNode` は平均レベルを抑える仕組みで、波形のピーク(クレストファクター)はそのまま通過する。Limiterだけでは 0dBFS 超えを防げないため、`SOFT_CLIP_KNEE`(0.75)以上をなだらかに 1.0 へ漸近させる曲線で頭を押さえている。実測でピークは最大 0.94 に収まる。
+- バイパスはノードを外さず、無変化になる値を入れて素通しさせる(コンプは `ratio = 1`、EQは `peaking` の `gain = 0`、SoftClipは線形カーブ)。
+- **プリセット切替は `setTargetAtTime` で滑らかに変化させる**(`applyEnhancement(..., { smooth: true, ctx })`)。直接 `.value =` で切り替えるとプチノイズが出る。書き出し時はチェーンを作った直後なので `smooth: false`(直接代入)でよい。
+- 補正が `off` のときは従来どおりの挙動。音量を上げれば波形どおりクリップし、波形の警告色(赤)も意味を保つ。UIのクリップ警告も `off` のときだけ出す。
+- 保存時、補正が何も掛かっていない曲は `isEnhancementActive()` が false になり、`OfflineAudioContext` を経由しない軽い経路(`sliceAudioBufferToWavBlob`)で書き出す。
 
 ### 音声フォーマットの使い分け
 
-- **ローカル保存(IndexedDB)は非圧縮WAV。** `sliceAudioBufferToWavBlob()`(コンプOFF)/ `sliceAudioBufferToWavBlobWithCompressor()`(コンプON、`OfflineAudioContext` でレンダリング)。
+- **ローカル保存(IndexedDB)は非圧縮WAV。** `sliceAudioBufferToWavBlob()`(補正なし)/ `sliceAudioBufferToWavBlobWithEnhancement()`(補正あり、`OfflineAudioContext` でレンダリング)。
 - **共有(R2アップロード)時のみMP3に変換する。** `ShareModal` が保存済みWAVを `convertWavBlobToMp3Blob()` で128kbps MP3にしてからアップロードする。
-- 音量調整(`gains`)とコンプのON/OFFは、**プレビュー再生・保存WAV・共有MP3のすべてに同じように反映される**。片方だけ変えると聴こえ方と保存内容がずれる。
+- 音量調整(`gains`)・音質補正(`enhancement`)・EQ(`eq`)は、**プレビュー再生・保存WAV・共有MP3のすべてに同じように反映される**。
 
 ## はまりやすい点
 
 - **lamejs**: npm版 `lamejs`(1.2.1)はViteなどのESMバンドラーで `MPEGMode is not defined` エラーになる既知の不具合がある。必ず `@breezystack/lamejs` を使うこと(`src/audio/mp3Encoder.js`)。
 - **無音判定の閾値は絶対dBFS**(上記「音声処理」参照)。相対値に変えない。
-- **プレビューと保存でパラメータをズラさない**。現状はチェーン構築が2箇所に重複しているため、変更時は両方を手で合わせる必要がある。
-- **共有後はR2が正本**: ローカルIndexedDBの変更は自動同期されない(Session詳細の「更新をアップロード」で手動反映)。この操作は共有相手が追加した内容を上書きする可能性がある(マージ処理は未実装)。
+- **プレビューと保存でパラメータをズラさない**。`createEnhancementChain()` / `ENHANCEMENT_PRESETS` を唯一の定義元として使い続けること。ここを迂回して個別にノードを組むと、以前の「プレビューと保存結果がズレる」状態に戻る。
+- **共有後の同期は「後勝ち」の差分更新**: 共有済みSessionでタイトル・★・コメント・メモを編集すると、`shareSync.js` 経由で自動的にR2へ反映される(後から書いた方が残る)。触っていない項目は送らないので、共有相手の編集は消えない。ただし ShareModal の「音声ごと再アップロード」は**音声を含めて丸ごと差し替える**ため、共有相手の追加分が消えることがある。
 - **`SessionNew.jsx` のindexキー状態**(下記「規約」参照)。区間構成が変わるとindexの意味が変わる。
 
 ## 規約
 
-- 曲単位の調整(曲名・トリム・音量・コンプ)はすべて `SessionNew.jsx` 内で**配列インデックスをキーにした状態**として持つ。区間構成が変わる操作(再判定 `handleReanalyze`・手動分割点の追加/削除)をしたら、`titles` / `trimOverrides` / `gains` / `compressorOn` を**4つまとめて**リセットする。1つでも残すと、その設定が別の曲に付いてしまう。
+- 曲単位の調整(曲名・トリム・音量・音質補正・EQ)はすべて `SessionNew.jsx` 内で**配列インデックスをキーにした状態**として持つ。区間構成が変わる操作(再判定 `handleReanalyze`・手動分割点の追加/削除)をしたら、`titles` / `trimOverrides` / `gains` / `enhancement` / `eq` を**5つまとめて**リセットする。1つでも残すと、その設定が別の曲に付いてしまう。
   - 新しくindexキーの状態を追加したら、上記2箇所のリセットにも必ず追加すること。
 - 区間データは段階的に導出される:
 
@@ -191,23 +195,13 @@ Source → DynamicsCompressor → Gain → Destination
 > **以下はすべて構想であり、現行コードには存在しない。** 実装済みと誤解しないこと。
 > 着手時はこの節の内容を「現行実装」の節へ移動し、この節から削除する。
 
-### Audio Enhancement(プリセット方式のエフェクトチェーン)
+### 検証手段の整備(提案段階)
 
-現状の「コンプON/OFF」を、複数プリセットから選ぶ方式へ拡張する構想。実装する場合は以下の設計判断に従う:
+テストランナーは未導入のまま。Playwrightによるスモークテスト(ルーティング / 共有の後勝ち同期 / 音質補正の実測)は作成済みだがリポジトリには入れていない。導入する場合 `playwright-core` が devDependency に1つ増える。**勝手に入れないこと**(この判断は保留中)。
 
-- **想定チェーン**: `Source → Compressor → Makeup Gain → 手動音量調整 → Limiter → Destination`
-- **Limiterは処理チェーンの最終段に置く。** 手動音量調整をLimiterより前に置かないと、ユーザーが音量を上げた分がクリッピング防止の対象から漏れる。
-- **プレビューと書き出しで単一のソースを共有する。** プレビュー(`AudioContext`)と保存(`OfflineAudioContext`)でパラメータがズレないよう、`ENHANCEMENT_PRESETS`(`src/audio/audioAnalysis.js` に新設)を唯一の定義元とする。現行の `COMPRESSOR_PRESET` はこれに統合する想定。あわせて、現在2箇所に重複しているチェーン構築コードも共通化したい。
-- **プリセット切り替え時は `setTargetAtTime` で滑らかに変化させる。** 直接 `.value =` で切り替えるとプチノイズが出る。現行コードは全箇所で直接代入しているため、この規約は移行時に導入することになる。
-- 曲単位の状態キー(現 `compressorOn`)は `enhancement` にリネームする想定。indexキーのリセット規約は現行と同じ。
+### 複数Band対応・表示名の端末間共有
 
-### 簡易EQプリセット
-
-細かいパラメトリックEQではなく、「ハイを少し持ち上げる」「ローを少し持ち上げる」程度の2〜3種類のプリセットボタン。`BiquadFilterNode`(シェルビング)で実現可能。**Audio Enhancement のチェーン再設計と同時に着手するのが望ましい**(EQ単体を現行の3段チェーンに足すと、後でチェーンを組み直す際に二度手間になる)。
-
-### 共有後のローカル編集の自動反映
-
-現状は手動アップロードのみ。自動化する場合、`applyPatch` はホワイトリスト方式の上書きでマージ処理を持たないため、**共有相手の編集を消す競合が起きる**。着手前に競合解決の方針(最終更新優先 / フィールド単位マージ 等)を決める必要がある。
+いずれも「ログイン不要」という前提と引き換えになる。着手するなら前提から見直す話になる。
 
 ## 名前について(意図的に統一していない)
 
@@ -223,7 +217,7 @@ Source → DynamicsCompressor → Gain → Destination
 - **表示名は端末ローカル** — IndexedDBの `settings` に保存するため、別端末では再入力が必要。
 - **複数Band非対応。**
 - **共有音声の削除機能はない**(R2上のオブジェクトは残り続ける)。
-- **Android実機(Chrome)での動作確認が未実施。**
+- **共有の自動反映は差分更新のみ。** 音声そのものを差し替えるには ShareModal の「音声ごと再アップロード」が必要で、そちらは共有相手の追加分を消す可能性がある。
 - **依存の脆弱性が `npm audit` に残っている**。現時点でいずれも本番影響なしと判断しているが、内容を理解せず「0件にする」ためだけに `--force` を当てないこと:
   - `esbuild` / `vite` — 解消には Vite 8 への破壊的アップグレードが必要。advisoryの影響範囲は**開発サーバー(`npm run dev`)のみ**で、ビルド成果物には及ばない。
   - `react-router` (high) — 「RSC Mode CSRF Bypass」。影響範囲は `>=7.12.0 <8.3.0` で 7.18.1 も含まれるが、**内容がRSC(React Server Components)モード専用**であり、本アプリはサーバーを持たないクライアント専用SPA(`BrowserRouter` + 静的配信、loader/actionも未使用)なので該当しない。解消するには `react-router` 8.3.0 が必要だが、`react-router-dom` は 7.18.1 が最新で 8.x が存在しないため、移行するなら import 元を `react-router` に切り替えることになる。
@@ -235,6 +229,6 @@ Source → DynamicsCompressor → Gain → Destination
 2. `wrangler.toml` を触ったなら `npx wrangler deploy --dry-run` でバインディングが読めるか。
 3. IndexedDBのスキーマを触ったなら `DB_VERSION` を上げ、既存データが壊れないか確認したか。
 4. `worker/index.js` を触ったなら、`editToken` / `audioKeys` がレスポンスに漏れていないか。
-5. 音声処理を触ったなら、**プレビュー再生・保存WAV・共有MP3の3経路すべて**に同じ効果が反映されるか(チェーン構築は2箇所に重複している)。
+5. 音声処理を触ったなら、`ENHANCEMENT_PRESETS` と `createEnhancementChain()` だけを直したか(プレビュー・保存WAV・共有MP3の3経路が自動的に揃う)。
 6. `README.md` に書かれている仕様(スライダー範囲、コンプの固定値、共有の挙動など)を変えたなら、READMEも合わせて更新したか。
 7. 「今後の設計案」の機能を実装したなら、該当節を「現行実装」へ移したか。

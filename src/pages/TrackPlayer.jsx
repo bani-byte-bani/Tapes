@@ -7,11 +7,14 @@ import {
   listComments,
   addComment,
   deleteComment,
+  getSession,
 } from '../repository/localRepository.js';
+import { syncToShare, isSyncable } from '../repository/shareSync.js';
 import { decodeAudioFile, drawWaveform, formatTime } from '../audio/audioAnalysis.js';
 import StarRating from '../components/StarRating.jsx';
 import CommentTimeline from '../components/CommentTimeline.jsx';
 import NicknameField from '../components/NicknameField.jsx';
+import SyncStatus from '../components/SyncStatus.jsx';
 
 export default function TrackPlayer() {
   const { sessionId, trackId } = useParams();
@@ -22,6 +25,8 @@ export default function TrackPlayer() {
   const [titleDraft, setTitleDraft] = useState('');
   const [currentTime, setCurrentTime] = useState(0);
   const [nickname, setNicknameState] = useState('');
+  const [session, setSession] = useState(null);
+  const [syncState, setSyncState] = useState('idle'); // idle | syncing | done | error
   const audioRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -33,6 +38,7 @@ export default function TrackPlayer() {
     (async () => {
       const t = await getTrack(trackId);
       setTrack(t);
+      setSession(await getSession(sessionId));
       setTitleDraft(t ? t.title : '');
       const blob = await getTrackAudio(trackId);
       if (blob) {
@@ -49,15 +55,26 @@ export default function TrackPlayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackId]);
 
+  // 共有済みSessionなら、ローカルの変更をR2にも反映する(後勝ち)
+  async function pushToShare(patch) {
+    if (!isSyncable(session)) return;
+    setSyncState('syncing');
+    const ok = await syncToShare(session, patch);
+    setSyncState(ok ? 'done' : 'error');
+  }
+
   async function handleFavorite(value) {
     const updated = await updateTrack(trackId, { favorite: value });
     setTrack(updated);
+    await pushToShare({ tracks: [{ id: trackId, favorite: value }] });
   }
 
   async function handleTitleBlur() {
     if (track && titleDraft !== track.title && titleDraft.trim()) {
-      const updated = await updateTrack(trackId, { title: titleDraft.trim() });
+      const title = titleDraft.trim();
+      const updated = await updateTrack(trackId, { title });
       setTrack(updated);
+      await pushToShare({ tracks: [{ id: trackId, title }] });
     }
   }
 
@@ -70,14 +87,25 @@ export default function TrackPlayer() {
 
   async function handleAddComment() {
     if (!newComment.trim()) return;
-    await addComment({ trackId, time: currentTime, text: newComment.trim(), author: nickname });
+    const created = await addComment({ trackId, time: currentTime, text: newComment.trim(), author: nickname });
     setNewComment('');
     await loadComments();
+    // ローカルと同じIDで送るので、共有側と対応が取れる
+    await pushToShare({
+      addComment: {
+        id: created.id,
+        trackId: created.trackId,
+        time: created.time,
+        text: created.text,
+        author: created.author,
+      },
+    });
   }
 
   async function handleDeleteComment(commentId) {
     await deleteComment(commentId);
     await loadComments();
+    await pushToShare({ deleteCommentId: commentId });
   }
 
   if (!track) {
@@ -101,6 +129,7 @@ export default function TrackPlayer() {
       />
 
       <StarRating value={track.favorite} onChange={handleFavorite} />
+      <SyncStatus state={syncState} />
 
       <canvas ref={canvasRef} className="waveform" style={{ marginTop: 12 }} />
 
