@@ -6,8 +6,10 @@ import {
   listComments,
   updateSession,
 } from '../repository/localRepository.js';
+import { syncToShare, isSyncable } from '../repository/shareSync.js';
 import StarRating from '../components/StarRating.jsx';
 import ShareModal from '../components/ShareModal.jsx';
+import SyncStatus from '../components/SyncStatus.jsx';
 
 export default function SessionDetail() {
   const { sessionId } = useParams();
@@ -17,6 +19,7 @@ export default function SessionDetail() {
   const [allComments, setAllComments] = useState([]);
   const [showShare, setShowShare] = useState(false);
   const [memoDraft, setMemoDraft] = useState('');
+  const [syncState, setSyncState] = useState('idle'); // idle | syncing | done | error
 
   async function load() {
     const s = await getSession(sessionId);
@@ -43,6 +46,12 @@ export default function SessionDetail() {
     if (session && memoDraft !== session.memo) {
       const updated = await updateSession(sessionId, { memo: memoDraft });
       setSession(updated);
+      // 共有済みならR2にも反映(後勝ち)
+      if (isSyncable(updated)) {
+        setSyncState('syncing');
+        const ok = await syncToShare(updated, { session: { memo: memoDraft } });
+        setSyncState(ok ? 'done' : 'error');
+      }
     }
   }
 
@@ -66,6 +75,7 @@ export default function SessionDetail() {
         onChange={(e) => setMemoDraft(e.target.value)}
         onBlur={handleMemoBlur}
       />
+      <SyncStatus state={syncState} />
 
       <div className="section-title">トラック ({tracks.length})</div>
       <div className="card">

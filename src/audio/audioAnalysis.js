@@ -166,14 +166,165 @@ export function dbToLinear(db) {
   return Math.pow(10, db / 20);
 }
 
-// バンド練習音源向けの、軽くならす程度のコンプレッサー設定(固定値)
-export const COMPRESSOR_PRESET = {
-  threshold: -24, // dB. これを超えた分だけ圧縮される
-  knee: 30, // dB. しきい値付近をなだらかに移行
-  ratio: 3, // 3:1 (軽め)
-  attack: 0.02, // 秒
-  release: 0.25, // 秒
+// ---------------------------------------------------------------------------
+// Audio Enhancement(ダイナミクス補正)と簡易EQ
+//
+// プレビュー再生(AudioContext)と保存時の書き出し(OfflineAudioContext)で
+// パラメータがズレないよう、**定義元はこのファイルだけ**に置く。
+// チェーンの組み立ても createEnhancementChain() に集約してあるので、
+// 音を変えたいときはこの節だけを直せばプレビュー・保存・共有の全部に反映される。
+// ---------------------------------------------------------------------------
+
+/** ダイナミクス補正のプリセット。バンド練習音源(音量差が大きい)向けの設定。 */
+export const ENHANCEMENT_PRESETS = {
+  off: {
+    label: 'なし',
+    hint: '録音そのまま',
+    compressor: null,
+    makeupGainDb: 0,
+    limiter: null,
+  },
+  light: {
+    label: '軽く整える',
+    hint: '音量差をゆるやかにならす',
+    // 旧 COMPRESSOR_PRESET と同じ値。従来の「コンプON」がこれに相当する。
+    compressor: { threshold: -24, knee: 30, ratio: 3, attack: 0.02, release: 0.25 },
+    makeupGainDb: 2,
+    limiter: { threshold: -2, knee: 0, ratio: 20, attack: 0.001, release: 0.1 },
+  },
+  strong: {
+    label: 'しっかり整える',
+    hint: '小さい音も聴こえるまで持ち上げる',
+    compressor: { threshold: -30, knee: 20, ratio: 6, attack: 0.01, release: 0.18 },
+    makeupGainDb: 5,
+    limiter: { threshold: -2, knee: 0, ratio: 20, attack: 0.001, release: 0.1 },
+  },
 };
+
+/** 簡易EQプリセット。シェルビングで高域/低域を軽く持ち上げるだけの2種類。 */
+export const EQ_PRESETS = {
+  off: { label: 'なし', hint: '補正しない', filter: null },
+  bright: { label: 'ハイを上げる', hint: 'シャリっとさせる', filter: { type: 'highshelf', frequency: 3200, gain: 4 } },
+  warm: { label: 'ローを上げる', hint: '厚みを足す', filter: { type: 'lowshelf', frequency: 220, gain: 4 } },
+};
+
+// バイパス時の値(ノードを外さず、無変化になる設定を入れて素通しさせる)
+const BYPASS_COMPRESSOR = { threshold: 0, knee: 0, ratio: 1, attack: 0.003, release: 0.25 };
+const BYPASS_FILTER = { type: 'peaking', frequency: 1000, gain: 0 };
+
+// ソフトクリッパーの曲線。
+// DynamicsCompressorNode は平均レベルを抑える仕組みなので、波形のピーク
+// (クレストファクター)はそのまま通過してしまい、それだけでは 0dBFS 超えを防げない。
+// そこで最終段に、しきい値までは素通し・それ以上はなだらかに 1.0 へ漸近する
+// 曲線を置いて、確実に振り切らないようにする。
+const SOFT_CLIP_KNEE = 0.75; // これ以下の振幅は一切変えない
+const CURVE_SIZE = 2048;
+
+function makeSoftClipCurve() {
+  const curve = new Float32Array(CURVE_SIZE);
+  for (let i = 0; i < CURVE_SIZE; i++) {
+    const x = (i / (CURVE_SIZE - 1)) * 2 - 1; // -1 〜 1
+    const a = Math.abs(x);
+    const shaped =
+      a <= SOFT_CLIP_KNEE
+        ? a
+        : SOFT_CLIP_KNEE + (1 - SOFT_CLIP_KNEE) * Math.tanh((a - SOFT_CLIP_KNEE) / (1 - SOFT_CLIP_KNEE));
+    curve[i] = Math.sign(x) * shaped;
+  }
+  return curve;
+}
+
+function makeLinearCurve() {
+  const curve = new Float32Array(CURVE_SIZE);
+  for (let i = 0; i < CURVE_SIZE; i++) {
+    curve[i] = (i / (CURVE_SIZE - 1)) * 2 - 1;
+  }
+  return curve;
+}
+
+const SOFT_CLIP_CURVE = makeSoftClipCurve();
+const LINEAR_CURVE = makeLinearCurve();
+
+// プリセット切替時の追従時間(秒)。直接代入するとプチノイズが出るため setTargetAtTime を使う。
+const SMOOTHING_TIME = 0.02;
+
+export function isEnhancementActive({ enhancement = 'off', eq = 'off' } = {}) {
+  return enhancement !== 'off' || eq !== 'off';
+}
+
+/**
+ * チェーンのパラメータを設定する。
+ * smooth=true(プレビュー中の切替)のときは setTargetAtTime で滑らかに変化させ、
+ * false(書き出し時、チェーンを作った直後)のときは直接代入する。
+ */
+export function applyEnhancement(nodes, options = {}, { smooth = false, ctx = null } = {}) {
+  const { enhancement = 'off', eq = 'off', gainDb = 0 } = options;
+  const preset = ENHANCEMENT_PRESETS[enhancement] || ENHANCEMENT_PRESETS.off;
+  const eqPreset = EQ_PRESETS[eq] || EQ_PRESETS.off;
+
+  const set = (param, value) => {
+    if (smooth && ctx) {
+      param.setTargetAtTime(value, ctx.currentTime, SMOOTHING_TIME);
+    } else {
+      param.value = value;
+    }
+  };
+  const setCompressor = (node, cfg) => {
+    set(node.threshold, cfg.threshold);
+    set(node.knee, cfg.knee);
+    set(node.ratio, cfg.ratio);
+    set(node.attack, cfg.attack);
+    set(node.release, cfg.release);
+  };
+
+  // EQ(type は AudioParam ではないので常に直接代入)
+  const filter = eqPreset.filter || BYPASS_FILTER;
+  nodes.eq.type = filter.type;
+  set(nodes.eq.frequency, filter.frequency);
+  set(nodes.eq.gain, filter.gain);
+
+  setCompressor(nodes.compressor, preset.compressor || BYPASS_COMPRESSOR);
+  set(nodes.makeup.gain, dbToLinear(preset.makeupGainDb || 0));
+  set(nodes.userGain.gain, dbToLinear(gainDb));
+  setCompressor(nodes.limiter, preset.limiter || BYPASS_COMPRESSOR);
+
+  // 補正なしのときは素通し(従来どおり、音量を上げれば波形どおりクリップする)
+  nodes.softClip.curve = preset.limiter ? SOFT_CLIP_CURVE : LINEAR_CURVE;
+}
+
+/**
+ * エフェクトチェーンを組み立てて { input, output, nodes } を返す。
+ * プレビュー用(AudioContext)と書き出し用(OfflineAudioContext)の両方から呼ぶ。
+ *
+ *   Source → EQ → Compressor → Makeup Gain → 手動音量調整 → Limiter → SoftClip → Destination
+ *
+ * **Limiterは必ず最終段に置く。** 手動音量調整より前に置くと、
+ * ユーザーが音量を上げた分がクリッピング防止の対象から漏れてしまう。
+ */
+export function createEnhancementChain(ctx, options = {}) {
+  const nodes = {
+    eq: ctx.createBiquadFilter(),
+    compressor: ctx.createDynamicsCompressor(),
+    makeup: ctx.createGain(),
+    userGain: ctx.createGain(),
+    limiter: ctx.createDynamicsCompressor(),
+    softClip: ctx.createWaveShaper(),
+  };
+
+  const order = [nodes.eq, nodes.compressor, nodes.makeup, nodes.userGain, nodes.limiter, nodes.softClip];
+  for (let i = 0; i < order.length - 1; i++) {
+    order[i].connect(order[i + 1]);
+  }
+
+  applyEnhancement(nodes, options, { smooth: false });
+
+  return {
+    input: order[0],
+    output: order[order.length - 1],
+    nodes,
+    disconnect: () => order.forEach((n) => n.disconnect()),
+  };
+}
 
 function encodeWavFromChannels(channelsData, frameCount, numChannels, sampleRate) {
   const bytesPerSample = 2;
@@ -231,10 +382,11 @@ export function sliceAudioBufferToWavBlob(audioBuffer, startTime, endTime, gain 
 }
 
 /**
- * 区間を音量調整+コンプレッサー(COMPRESSOR_PRESET固定値)適用済みでWAV Blobとして書き出す。
- * コンプは時間方向の処理が必要なため、OfflineAudioContextで非リアルタイムレンダリングする。
+ * 区間を Audio Enhancement(ダイナミクス補正・EQ・音量調整)適用済みでWAV Blobとして書き出す。
+ * コンプ/リミッターは時間方向の処理が必要なため、OfflineAudioContextで非リアルタイムレンダリングする。
+ * optionsは { enhancement, eq, gainDb } で、プレビュー再生と同じものを渡すこと。
  */
-export async function sliceAudioBufferToWavBlobWithCompressor(audioBuffer, startTime, endTime, gain = 1) {
+export async function sliceAudioBufferToWavBlobWithEnhancement(audioBuffer, startTime, endTime, options = {}) {
   const sampleRate = audioBuffer.sampleRate;
   const numChannels = audioBuffer.numberOfChannels;
   const startFrame = Math.max(0, Math.floor(startTime * sampleRate));
@@ -253,17 +405,10 @@ export async function sliceAudioBufferToWavBlobWithCompressor(audioBuffer, start
   const source = offlineCtx.createBufferSource();
   source.buffer = slice;
 
-  const compressor = offlineCtx.createDynamicsCompressor();
-  compressor.threshold.value = COMPRESSOR_PRESET.threshold;
-  compressor.knee.value = COMPRESSOR_PRESET.knee;
-  compressor.ratio.value = COMPRESSOR_PRESET.ratio;
-  compressor.attack.value = COMPRESSOR_PRESET.attack;
-  compressor.release.value = COMPRESSOR_PRESET.release;
+  const chain = createEnhancementChain(offlineCtx, options);
+  source.connect(chain.input);
+  chain.output.connect(offlineCtx.destination);
 
-  const gainNode = offlineCtx.createGain();
-  gainNode.gain.value = gain;
-
-  source.connect(compressor).connect(gainNode).connect(offlineCtx.destination);
   source.start();
   const rendered = await offlineCtx.startRendering();
 

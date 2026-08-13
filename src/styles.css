@@ -499,8 +499,23 @@ a {
   margin: 4px 0 0;
 }
 
-.comp-toggle {
-  padding: 5px 12px;
+/* 音質補正・EQのプリセット選択(曲単位) */
+.preset-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.preset-group {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.preset-btn {
+  padding: 5px 11px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
   background: var(--color-surface);
@@ -508,10 +523,31 @@ a {
   font-size: 12px;
 }
 
-.comp-toggle.is-active {
+.preset-btn.is-active {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: #fff;
+}
+
+.preset-hint {
+  font-size: 10px;
+  color: var(--color-ink-soft);
+  margin: 6px 0 0;
+}
+
+/* 共有済みSessionの自動反映(後勝ち)の状態表示 */
+.sync-status {
+  font-size: 11px;
+  margin: 6px 0 0;
+  color: var(--color-ink-soft);
+}
+
+.sync-status.is-done {
+  color: var(--color-accent);
+}
+
+.sync-status.is-error {
+  color: var(--color-danger);
 }
 
 .gain-row {

@@ -104,10 +104,12 @@ export default function ShareModal({ session, tracks, comments, onClose, onShare
             </div>
 
             <p style={{ fontSize: 11, color: 'var(--color-ink-soft)', marginTop: 14 }}>
-              「更新をアップロード」を押すと、この端末の最新のタイトル・お気に入り・コメントで上書きされます(共有相手が追加した内容は上書きされる場合があります)。
+              タイトル・お気に入り・コメント・メモの変更は、この端末で編集したときに自動で共有リンクへ反映されます(あとから変更した方が残ります)。
+              <br />
+              下のボタンは、曲の分割や音質補正をやり直して<strong>音声そのものを差し替える</strong>ときに使ってください。音声を含めて丸ごと上書きするため、共有相手が追加した内容が消える場合があります。
             </p>
             <button className="btn btn-secondary btn-block" style={{ marginTop: 8 }} onClick={handleShare}>
-              更新をアップロード
+              音声ごと再アップロード
             </button>
             <button className="btn btn-block" style={{ marginTop: 8 }} onClick={onClose}>
               閉じる
